@@ -1,0 +1,120 @@
+name: node-ci
+
+on:
+  workflow_call:
+    inputs:
+      node-version:      { type: string,  default: '24' }
+      working-directory: { type: string,  default: '.' }
+      needs-postgres:    { type: boolean, default: false }
+      postgres-db:       { type: string,  default: 'test' }
+      smoke:             { type: boolean, default: true }
+      smoke-port:        { type: string,  default: '80' }
+      smoke-path:        { type: string,  default: '/' }
+      smoke-internal:    { type: boolean, default: true }
+      smoke-run-args:    { type: string,  default: '' }
+      docker-build-args: { type: string,  default: '' }
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+      - run: npm ci
+      - run: npm run verify
+
+  integration:
+    if: inputs.needs-postgres
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ${{ inputs.postgres-db }}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/${{ inputs.postgres-db }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+      - run: npm ci
+      - run: npm run verify:integration
+
+  image:
+    if: inputs.smoke
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          load: true
+          tags: ci-image:smoke
+          build-args: ${{ inputs.docker-build-args }}
+      - name: Boot and smoke test
+        env:
+          PORT:  ${{ inputs.smoke-port }}
+          RPATH: ${{ inputs.smoke-path }}
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p "8080:${PORT}" ${{ inputs.smoke-run-args }} ci-image:smoke
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS "http://localhost:8080${RPATH}" >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::container never answered on published port ${PORT}${RPATH}"
+            docker logs smoke || true
+            docker rm -f smoke || true
+            exit 1
+          fi
+          echo "external reachability OK"
+      - name: Smoke test from INSIDE the container
+        if: inputs.smoke-internal
+        env:
+          PORT:  ${{ inputs.smoke-port }}
+          RPATH: ${{ inputs.smoke-path }}
+        run: |
+          set -euo pipefail
+          # This is the check that catches the Next standalone $HOSTNAME bug:
+          # a process bound to the container's own IP still answers a published
+          # port, so the external curl above passes while in-container calls fail.
+          # node:24-alpine and nginx:alpine ship busybox wget, NOT curl.
+          if ! docker exec smoke wget -qO- "http://localhost:${PORT}${RPATH}" >/dev/null; then
+            echo "::error::container does not answer on its own localhost — check HOSTNAME/PORT binding"
+            docker logs smoke || true
+            docker rm -f smoke || true
+            exit 1
+          fi
+          echo "internal loopback OK"
+      - name: Tear down
+        if: always()
+        run: docker rm -f smoke || true
