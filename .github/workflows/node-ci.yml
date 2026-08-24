@@ -41,7 +41,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     services:
       postgres:
-        image: postgres:16.14-alpine
+        image: postgres:16.15-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
