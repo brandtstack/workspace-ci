@@ -20,6 +20,17 @@
       "matchUpdateTypes": ["major"],
       "automerge": false,
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Park TypeScript 7. typescript-eslint hard-throws on any TS 7.x (its guard is `versionMajor >= 7`, not a 7.0-only check), and even its canary channel still peers `typescript >=4.8.4 <6.1.0`. There is no released 7.1 either — only daily 7.1.0-dev nightlies. Unpark when typescript-eslint#10940 lands; it is currently open, unmilestoned and labelled 'blocked by external API'.",
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7"
+    },
+    {
+      "description": "Park ESLint 10 for repos still on 9. eslint-config-next bundles eslint-plugin-react, whose latest (7.37.5) peers at `eslint ^9.7` and errors on ESLint 10 with 'contextOrFilename.getFilename is not a function'. matchCurrentVersion scopes this to repos on 9 only, so repos already running ESLint 10 keep receiving 10.x updates. Unpark when eslint-plugin-react ships ESLint 10 support and Next picks it up.",
+      "matchPackageNames": ["eslint"],
+      "matchCurrentVersion": "<10",
+      "allowedVersions": "<10"
     }
   ],
   "vulnerabilityAlerts": {
