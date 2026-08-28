@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   ci:
-    uses: adrianbrandt/workspace-ci/.github/workflows/node-ci.yml@main
+    uses: brandtstack/workspace-ci/.github/workflows/node-ci.yml@main
     permissions:
       contents: read
       packages: write        # required to publish to GHCR
@@ -44,15 +44,16 @@ jobs:
 
   pr-title:
     if: github.event_name == 'pull_request'
-    uses: adrianbrandt/workspace-ci/.github/workflows/pr-title.yml@main
+    uses: brandtstack/workspace-ci/.github/workflows/pr-title.yml@main
 
   release:
     if: github.event_name == 'push'
     needs: ci
-    uses: adrianbrandt/workspace-ci/.github/workflows/release.yml@main
+    uses: brandtstack/workspace-ci/.github/workflows/release.yml@main
     permissions:
       contents: write        # push the git tag
       packages: write        # retag in GHCR
+      pull-requests: read    # resolve the merged PR's head SHA
 ```
 
 Pin `@main` to a commit SHA in real repos — Renovate keeps it current via
@@ -62,7 +63,7 @@ Pin `@main` to a commit SHA in real repos — Renovate keeps it current via
 
 ```json
 { "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>adrianbrandt/workspace-ci"] }
+  "extends": ["github>brandtstack/workspace-ci"] }
 ```
 
 ## Versioning
