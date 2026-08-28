@@ -1,0 +1,150 @@
+name: release
+
+# Mints the version on merge to main and promotes the already-built image.
+#
+# Ported from the aasanezoo-web .husky/pre-push auto-tagger, which cannot
+# survive a PR workflow: it keys on a LOCAL push to refs/heads/main, and under
+# a PR flow main advances server-side, so the hook never fires and tagging
+# stops silently.
+#
+# Order is load-bearing: derive -> retag image -> push git tag LAST, so a git
+# tag never exists without the image it names.
+
+on:
+  workflow_call:
+    inputs:
+      # Must match the caller's node-ci/go-ci setting. When false, only the git
+      # tag is minted and no registry work happens.
+      publish-image: { type: boolean, default: true }
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # push the tag
+      packages: write   # retag in GHCR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0        # need full history + all tags to find the base version
+          fetch-tags: true
+
+      - name: Skip if this commit is already version-tagged
+        id: guard
+        run: |
+          set -euo pipefail
+          if git tag --points-at "$GITHUB_SHA" | grep -q '^v[0-9]'; then
+            echo "already tagged: $(git tag --points-at "$GITHUB_SHA" | tr '\n' ' ')"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Derive version from the squash commit title
+        id: ver
+        if: steps.guard.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+
+          # With squash merge the commit landing on main IS the PR title, so a
+          # single commit carries the whole semver signal. This is why the PR
+          # title is a required, linted status check.
+          subject=$(git log -1 --format='%s' "$GITHUB_SHA")
+          body=$(git log -1 --format='%b' "$GITHUB_SHA")
+          echo "subject: $subject"
+
+          last_v=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1 || true)
+          if [ -n "$last_v" ]; then
+            base="${last_v#v}"
+          elif [ -f package.json ]; then
+            base=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
+          else
+            base="0.0.0"
+          fi
+
+          major="${base%%.*}"; rest="${base#*.}"
+          minor="${rest%%.*}"; patch="${rest#*.}"
+          patch="${patch%%[-+]*}"   # drop any prerelease/build suffix
+
+          level="patch"
+          if printf '%s\n' "$subject" | grep -qE '^[a-zA-Z]+(\([^)]*\))?!:' \
+             || printf '%s\n' "$body" | grep -q 'BREAKING CHANGE'; then
+            level="major"
+          elif printf '%s\n' "$subject" | grep -qE '^feat(\([^)]*\))?:'; then
+            level="minor"
+          fi
+
+          case "$level" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+
+          new="v${major}.${minor}.${patch}"
+          if git rev-parse -q --verify "refs/tags/${new}" >/dev/null 2>&1; then
+            echo "::error::tag ${new} already exists — refusing to move it"
+            exit 1
+          fi
+
+          echo "base=${base} level=${level} new=${new}"
+          echo "version=${new}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the PR head SHA this merge came from
+        id: head
+        if: steps.guard.outputs.skip == 'false' && inputs.publish-image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The image was built and smoke-tested on the BRANCH, whose SHA the
+          # squash merge discarded. Recover it via the commit->PR association.
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+                   --jq '.[0].head.sha // empty')
+          if [ -z "$head" ]; then
+            echo "::error::no PR is associated with ${GITHUB_SHA}."
+            echo "::error::A direct push to main has no tested image to promote."
+            exit 1
+          fi
+          echo "head=${head}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: steps.guard.outputs.skip == 'false' && inputs.publish-image
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote the tested image to ${{ steps.ver.outputs.version }}
+        if: steps.guard.outputs.skip == 'false' && inputs.publish-image
+        env:
+          HEAD: ${{ steps.head.outputs.head }}
+          VER:  ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          # imagetools create is a registry-side manifest copy: no pull, no
+          # rebuild, no layer transfer. The bytes are the tested bytes.
+          docker buildx imagetools create \
+            -t "${IMAGE}:${VER}" \
+            -t "${IMAGE}:latest" \
+            "${IMAGE}:sha-${HEAD}"
+          echo "promoted ${IMAGE}:sha-${HEAD} -> ${VER} + latest"
+
+      # LAST: only now does the version become real.
+      - name: Push git tag
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VER" -m "$VER"
+          git push origin "refs/tags/$VER"
+          echo "tagged $VER"
+          # NOTE: tags pushed with GITHUB_TOKEN do NOT trigger further
+          # workflows (GitHub loop prevention). Harmless today; Phase 2's
+          # tag-triggered deploy will need a PAT or app token.

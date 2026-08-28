@@ -13,6 +13,10 @@ on:
       smoke-internal:    { type: boolean, default: true }
       smoke-run-args:    { type: string,  default: '' }
       docker-build-args: { type: string,  default: '' }
+      # Publish the built image to GHCR as :sha-<head>. The release workflow
+      # later retags that exact image as :vX.Y.Z — it is never rebuilt.
+      # Set false for repos that do not deploy from a registry image.
+      publish-image:     { type: boolean, default: true }
 
 permissions:
   contents: read
@@ -64,29 +68,53 @@ jobs:
       - run: npm ci
       - run: npm run verify:integration
 
+  # Builds the production image ONCE. The smoke steps are conditional, but the
+  # build and publish are not — repos that cannot smoke test (their CMD needs a
+  # database before it answers) must still publish an image to deploy from.
+  #
+  # Runs on pull_request only. The image published here is the artifact the
+  # release workflow retags on merge, so there is deliberately no rebuild on
+  # main: what shipped is bit-for-bit what was tested here.
   image:
-    if: inputs.smoke
+    if: inputs.publish-image && github.event_name == 'pull_request'
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve image ref and head SHA
+        id: meta
+        run: |
+          set -euo pipefail
+          # GHCR rejects uppercase; QRGenerator would 400 without this.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          # On pull_request, github.sha is the synthetic merge commit, NOT the
+          # branch tip. The release workflow looks the image up by head SHA.
+          echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
       - name: Build production image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ${{ inputs.working-directory }}
           load: true
-          tags: ci-image:smoke
+          tags: ci-image:local
           build-args: ${{ inputs.docker-build-args }}
+
       - name: Boot and smoke test
+        if: inputs.smoke
         env:
           PORT:  ${{ inputs.smoke-port }}
           RPATH: ${{ inputs.smoke-path }}
         run: |
           set -euo pipefail
-          docker run -d --name smoke -p "8080:${PORT}" ${{ inputs.smoke-run-args }} ci-image:smoke
+          docker run -d --name smoke -p "8080:${PORT}" ${{ inputs.smoke-run-args }} ci-image:local
           ok=0
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS "http://localhost:8080${RPATH}" >/dev/null 2>&1; then ok=1; break; fi
             sleep 2
           done
@@ -97,8 +125,9 @@ jobs:
             exit 1
           fi
           echo "external reachability OK"
+
       - name: Smoke test from INSIDE the container
-        if: inputs.smoke-internal
+        if: inputs.smoke && inputs.smoke-internal
         env:
           PORT:  ${{ inputs.smoke-port }}
           RPATH: ${{ inputs.smoke-path }}
@@ -118,6 +147,26 @@ jobs:
             exit 1
           fi
           echo "internal loopback OK"
+
       - name: Tear down
         if: always()
         run: docker rm -f smoke || true
+
+      # Push happens last, so a smoke failure means nothing reaches the registry.
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish :sha-<head> to GHCR
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          HEAD:  ${{ steps.meta.outputs.head }}
+        run: |
+          set -euo pipefail
+          # docker tag, not a second build: the pushed bytes are exactly the
+          # image the smoke steps just exercised.
+          docker tag ci-image:local "${IMAGE}:sha-${HEAD}"
+          docker push "${IMAGE}:sha-${HEAD}"
+          echo "published ${IMAGE}:sha-${HEAD}"

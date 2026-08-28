@@ -1,0 +1,43 @@
+name: pr-title
+
+# The squash commit that lands on main IS the PR title, and that title is the
+# sole input to the version bump in release.yml. The local commit-msg
+# commitlint hook only sees commits that squash-merge throws away, so without
+# this check an unlinted title silently produces a wrong version.
+#
+# Requires the repo setting "Default to PR title for squash merge commits".
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the PR title is a conventional commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # Deliberately plain shell rather than a third-party action: one less
+          # pinned dependency for a check this small.
+          pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9._-]+\))?!?: .+'
+
+          if printf '%s' "$TITLE" | grep -qE "$pattern"; then
+            echo "OK: $TITLE"
+            case "$TITLE" in
+              feat!*|*"!:"*) echo "-> major bump" ;;
+              feat*)         echo "-> minor bump" ;;
+              *)             echo "-> patch bump" ;;
+            esac
+            exit 0
+          fi
+
+          echo "::error::PR title is not a conventional commit: '${TITLE}'"
+          echo "::error::Expected '<type>[(scope)][!]: <subject>', e.g. 'feat(auth): add SSO'."
+          echo "::error::Types: build chore ci docs feat fix perf refactor revert style test"
+          echo "::error::This title becomes the squash commit and drives the version bump."
+          exit 1
