@@ -64,10 +64,19 @@ jobs:
           if [ -n "$last_v" ]; then
             base="${last_v#v}"
           elif [ -f package.json ]; then
-            base=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
+            # `node -p` prints the string "undefined" and still exits 0 when the
+            # field is absent, so `|| echo` never fires. Coerce inside node.
+            base=$(node -p "require('./package.json').version || '0.0.0'" 2>/dev/null || echo "0.0.0")
           else
             base="0.0.0"
           fi
+
+          # Anything that is not a bare X.Y.Z would break the arithmetic below
+          # under `set -u`. Refuse to guess; start from zero.
+          case "$base" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "unusable base version '${base}', falling back to 0.0.0"; base="0.0.0" ;;
+          esac
 
           major="${base%%.*}"; rest="${base#*.}"
           minor="${rest%%.*}"; patch="${rest#*.}"
