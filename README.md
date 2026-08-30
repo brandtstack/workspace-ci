@@ -101,6 +101,32 @@ The git tag goes last so a tag never exists without the image it names.
 (GitHub loop prevention). Any future tag-triggered deploy needs a PAT or app
 token.
 
+### Deploying to Coolify from `release.yml`
+
+Pass `coolify-app-uuid` and the three Coolify secrets to have a merge deploy the image that CI
+already built and smoke-tested, instead of letting Coolify rebuild from source:
+
+```yaml
+  release:
+    if: github.event_name == 'push'
+    needs: ci
+    uses: brandtstack/workspace-ci/.github/workflows/release.yml@<sha>
+    permissions: { contents: write, packages: write, pull-requests: read }
+    with:
+      coolify-app-uuid: <application uuid>
+    secrets:
+      COOLIFY_TOKEN:           ${{ secrets.COOLIFY_TOKEN }}
+      CF_ACCESS_CLIENT_ID:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+```
+
+**Omit `coolify-app-uuid` and the workflow behaves exactly as before** — tag only, no deploy. That
+guard is what allows apps to migrate one at a time.
+
+Prerequisites, one-time per application: `build_pack` set to `dockerimage`, the GHCR image name set,
+and **`is_auto_deploy_enabled` set to `false`** — otherwise the GitHub-App webhook and this workflow
+race on every merge and the webhook deploys the *previous* tag.
+
 ## Repo settings this assumes
 
 - Squash merge only; **"Default to PR title for squash merge commits"** on —
