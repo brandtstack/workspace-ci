@@ -16,6 +16,17 @@ on:
       # Must match the caller's node-ci/go-ci setting. When false, only the git
       # tag is minted and no registry work happens.
       publish-image: { type: boolean, default: true }
+      # Coolify application uuid. When empty (the default) no deploy is
+      # attempted and this workflow behaves exactly as it did before —
+      # that guard is what lets apps migrate one at a time.
+      coolify-app-uuid: { type: string, default: '' }
+    secrets:
+      # All three are required together to reach the Coolify API: the CF pair
+      # gets past Cloudflare Access at the edge, the bearer authenticates to
+      # Coolify itself. Optional so un-migrated callers need not pass them.
+      COOLIFY_TOKEN:           { required: false }
+      CF_ACCESS_CLIENT_ID:     { required: false }
+      CF_ACCESS_CLIENT_SECRET: { required: false }
 
 permissions:
   contents: read
@@ -161,3 +172,90 @@ jobs:
           # NOTE: tags pushed with GITHUB_TOKEN do NOT trigger further
           # workflows (GitHub loop prevention). Harmless today; Phase 2's
           # tag-triggered deploy will need a PAT or app token.
+
+      # ---- Coolify: point the app at the version just promoted, then deploy ----
+      # Guarded on coolify-app-uuid so repos that have not migrated are untouched.
+      #
+      # Why two calls: /deploy accepts a docker_tag input but rejects it unless
+      # pull_request_id is also set ("docker_tag requires pull_request_id",
+      # DeployController.php). So the tag must be persisted on the application
+      # first. This is a constraint of the API, not a style choice.
+      #
+      # Base URL is the public, Cloudflare-Access-gated endpoint: a GitHub-hosted
+      # runner cannot reach kvm4's loopback :8000.
+      - name: Set APP_VERSION on the Coolify application
+        if: steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != ''
+        env:
+          UUID:   ${{ inputs.coolify-app-uuid }}
+          VER:    ${{ steps.ver.outputs.version }}
+          BEARER: ${{ secrets.COOLIFY_TOKEN }}
+          CFID:   ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CFSEC:  ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BEARER:-}" ] || [ -z "${CFID:-}" ] || [ -z "${CFSEC:-}" ]; then
+            echo "::error::coolify-app-uuid was set but one or more Coolify secrets are missing."
+            echo "::error::Need COOLIFY_TOKEN, CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET."
+            exit 1
+          fi
+          # SOURCE_COMMIT is not populated for a dockerimage build pack, so the
+          # running version has to be injected explicitly.
+          #
+          # Uses the /envs/bulk endpoint, NOT plain PATCH /envs: the plain
+          # endpoint only UPDATES and returns 404 "Environment variable not
+          # found." when the key does not exist yet, so the very first release
+          # for each app would fail. /envs/bulk upserts.
+          # Verified non-destructive (create_bulk_envs iterates the submitted
+          # items and updates-or-creates each; it contains no delete/whereNotIn),
+          # so this cannot disturb DATABASE_URL or the ACCESS_* vars.
+          # Note the success status is 201, not 200.
+          code=$(curl -sS -o /tmp/env.json -w '%{http_code}' -X PATCH \
+            -H "Authorization: Bearer ${BEARER}" \
+            -H "CF-Access-Client-Id: ${CFID}" \
+            -H "CF-Access-Client-Secret: ${CFSEC}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"data\":[{\"key\":\"APP_VERSION\",\"value\":\"${VER}\",\"is_buildtime\":false,\"is_runtime\":true,\"is_preview\":false}]}" \
+            "https://coolify.brandtstack.com/api/v1/applications/${UUID}/envs/bulk")
+          echo "APP_VERSION upsert -> ${code}"
+          if [ "$code" != "200" ] && [ "$code" != "201" ]; then cat /tmp/env.json; exit 1; fi
+
+      - name: Point the Coolify application at ${{ steps.ver.outputs.version }}
+        if: steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != ''
+        env:
+          UUID:   ${{ inputs.coolify-app-uuid }}
+          VER:    ${{ steps.ver.outputs.version }}
+          BEARER: ${{ secrets.COOLIFY_TOKEN }}
+          CFID:   ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CFSEC:  ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/patch.json -w '%{http_code}' -X PATCH \
+            -H "Authorization: Bearer ${BEARER}" \
+            -H "CF-Access-Client-Id: ${CFID}" \
+            -H "CF-Access-Client-Secret: ${CFSEC}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"docker_registry_image_tag\":\"${VER}\"}" \
+            "https://coolify.brandtstack.com/api/v1/applications/${UUID}")
+          echo "image tag PATCH -> ${code}"
+          if [ "$code" != "200" ]; then cat /tmp/patch.json; exit 1; fi
+
+      # LAST: the only step that touches production. A failure here leaves the
+      # git tag and the registry correct and is simply retryable.
+      - name: Deploy
+        if: steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != ''
+        env:
+          UUID:   ${{ inputs.coolify-app-uuid }}
+          BEARER: ${{ secrets.COOLIFY_TOKEN }}
+          CFID:   ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CFSEC:  ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/deploy.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${BEARER}" \
+            -H "CF-Access-Client-Id: ${CFID}" \
+            -H "CF-Access-Client-Secret: ${CFSEC}" \
+            "https://coolify.brandtstack.com/api/v1/deploy?uuid=${UUID}")
+          echo "deploy -> ${code}"
+          cat /tmp/deploy.json
+          if [ "$code" != "200" ]; then exit 1; fi
+          echo "deployment queued for ${UUID}"
