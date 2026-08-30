@@ -141,7 +141,7 @@ jobs:
           # resolve to ::1 and busybox wget prefers it, so an IPv4-only server
           # would fail this check even though it is working correctly.
           if ! docker exec smoke wget -qO- "http://127.0.0.1:${PORT}${RPATH}" >/dev/null; then
-            echo "::error::container does not answer on its own localhost — check HOSTNAME/PORT binding"
+            echo "::error::container does not answer on 127.0.0.1 — check HOSTNAME/PORT binding"
             docker logs smoke || true
             docker rm -f smoke || true
             exit 1
