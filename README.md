@@ -66,6 +66,28 @@ Pin `@main` to a commit SHA in real repos — Renovate keeps it current via
   "extends": ["github>brandtstack/workspace-ci"] }
 ```
 
+### A non-default Dockerfile
+
+`node-ci.yml` takes a **`dockerfile:`** input (path relative to the checkout root). Leave it unset
+and the build falls back to `{context}/Dockerfile` as before — the empty default is not passed
+through, so callers that do not set it are unaffected.
+
+```yaml
+    with:
+      publish-image: true
+      dockerfile: deploy/Dockerfile
+```
+
+Added 2026-09-01 for `access-panel`, whose Dockerfile lives at `deploy/Dockerfile`. Without it there
+was no way to point CI at a non-default path, so that repo could not publish an image and was the
+last app Coolify still built from source.
+
+⚠️ **`publish-image` must match between the `ci` and `release` jobs.** `ci` alone leaves `release`
+with no artifact to promote; `release` alone fails after CI has already passed.
+
+⚠️ Keep `.dockerignore` at the **repo root** — it is honored for a build whose context is the repo
+root even when the Dockerfile is in a subdirectory. A `deploy/.dockerignore` is silently ignored.
+
 ## Versioning
 
 There is **no version in `package.json`** and no version commit on `main`. The
