@@ -13,6 +13,12 @@ on:
       smoke-internal:    { type: boolean, default: true }
       smoke-run-args:    { type: string,  default: '' }
       docker-build-args: { type: string,  default: '' }
+      # Path to the Dockerfile, relative to the checkout root. Left EMPTY the
+      # action falls back to its own default ({context}/Dockerfile), so the 11
+      # callers that do not set this are byte-identical to before. Needed by
+      # access-panel, whose Dockerfile is the non-default deploy/Dockerfile —
+      # previously there was no way to point CI at it (backlog.md §27).
+      dockerfile:        { type: string,  default: '' }
       # Publish the built image to GHCR as :sha-<head>. The release workflow
       # later retags that exact image as :vX.Y.Z — it is never rebuilt.
       # Set false for repos that do not deploy from a registry image.
@@ -101,6 +107,7 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ${{ inputs.working-directory }}
+          file: ${{ inputs.dockerfile }}
           load: true
           tags: ci-image:local
           build-args: ${{ inputs.docker-build-args }}
