@@ -154,8 +154,17 @@ race on every merge and the webhook deploys the *previous* tag.
 - Squash merge only; **"Default to PR title for squash merge commits"** on —
   without it the squash title is a commit list and the bump is wrong.
 - Ruleset on `main`: require a PR, **0 required approvals** (solo — any other
-  value deadlocks), required checks `verify` / `image` / `pr-title`, block
-  force pushes.
+  value deadlocks), block force pushes, and set
+  `require_extra_approval_for_unattributed_changes: false` (it defaults **true**
+  and deadlocks a solo repo).
+- Required checks are the **job-prefixed** names — `ci / verify`, `ci / image`,
+  `pr-title / lint` — not `verify` / `image` / `pr-title`. A name that never
+  reports blocks every PR permanently.
+  ⚠️ **Never require a check that can skip.** `ci / integration` is skipped
+  wherever `postgres: false`, and a skipped job never reports — require it only
+  on repos that actually run it. Likewise `ci / image` on a repo with
+  `publish-image: false`. A repo with no CI at all (this one) requires a PR and
+  **no** status check.
 - Branch protection needs GitHub Team on private repos; Free enforces rulesets
   on public repos only.
 
@@ -166,15 +175,21 @@ Each repo defines what it can run, so the workflow and Dockerfile stay identical
 - `verify` — everything runnable with no external services (lint / typecheck / test, whichever exist)
 - `verify:integration` — optional; only where tests need a real service
 
-The Dockerfile builder stage runs `npm run verify` before `npm run build`.
-A failed Coolify build never swaps the running container — that is the deploy
-gate. **It stays even with branch protection:** protection gates the *merge*,
-the Dockerfile gates the *deploy*, including a Coolify redeploy of an older
-commit.
+The Dockerfile builder stage runs `npm run verify` before `npm run build`. That
+`RUN` was the deploy gate while Coolify built from source; since it stopped
+(below) the same `RUN` fires in the `ci / image` job instead, so a failed
+`verify` fails the PR and no image is ever published. **The box has no
+independent gate left** — which is why `ci / verify` and `ci / image` are
+required checks, and why the `RUN` stays in the Dockerfile rather than being
+trusted to CI alone.
 
-## Not yet done (Phase 2)
+## Coolify builds nothing (since 2026-09-01)
 
-Coolify still builds its own image from source, with no `.git`, so
-`APP_VERSION` falls back to the runtime `SOURCE_COMMIT` short SHA. The version
-only reaches the running container once Coolify deploys the GHCR image
-instead of building. That is a separate change.
+Every application is `build_pack: dockerimage` with auto-deploy **off**, pulling
+the `vX.Y.Z` tag this pipeline promoted. CI is the only thing that deploys, and a
+rollback is a tag swap.
+
+`release.yml` upserts `APP_VERSION` on the application (runtime, not build-time —
+build-time vars are rendered as Docker `ARG`s into the public build log) before
+pointing it at the new tag, so the running container reports the minted version
+rather than a `SOURCE_COMMIT` short SHA.
