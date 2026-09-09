@@ -19,6 +19,13 @@ on:
       # access-panel, whose Dockerfile is the non-default deploy/Dockerfile —
       # previously there was no way to point CI at it (backlog.md §27).
       dockerfile:        { type: string,  default: '' }
+      # Wire the @brandtstack-scoped GitHub Packages registry into every place this
+      # workflow installs dependencies. Off by default, so the callers that consume
+      # no private package are byte-identical to before.
+      # The token is the caller's own GITHUB_TOKEN - sufficient because each package
+      # grants the consuming repo read access (infra-validation.md G4), so there is
+      # no PAT here and nothing to rotate.
+      private-registry:  { type: boolean, default: false }
       # Publish the built image to GHCR as :sha-<head>. The release workflow
       # later retags that exact image as :vX.Y.Z — it is never rebuilt.
       # Set false for repos that do not deploy from a registry image.
@@ -41,6 +48,8 @@ jobs:
           cache: npm
           cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
       - run: npm ci
+        env:
+          NPM_TOKEN: ${{ inputs.private-registry && secrets.GITHUB_TOKEN || '' }}
       - run: npm run verify
 
   integration:
@@ -72,6 +81,8 @@ jobs:
           cache: npm
           cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
       - run: npm ci
+        env:
+          NPM_TOKEN: ${{ inputs.private-registry && secrets.GITHUB_TOKEN || '' }}
       - run: npm run verify:integration
 
   # Builds the production image ONCE. The smoke steps are conditional, but the
@@ -105,12 +116,18 @@ jobs:
 
       - name: Build production image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          NPM_TOKEN: ${{ inputs.private-registry && secrets.GITHUB_TOKEN || '' }}
         with:
           context: ${{ inputs.working-directory }}
           file: ${{ inputs.dockerfile }}
           load: true
           tags: ci-image:local
           build-args: ${{ inputs.docker-build-args }}
+          # A BuildKit secret, NOT a build-arg: an ARG renders into the build log in
+          # clear, which is how this workspace leaked secrets twice. Verified clean
+          # (infra-validation.md G6). Format is <secret-id>=<env var name>.
+          secret-envs: ${{ inputs.private-registry && 'npm_token=NPM_TOKEN' || '' }}
 
       - name: Boot and smoke test
         if: inputs.smoke
