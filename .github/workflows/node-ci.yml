@@ -37,6 +37,13 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # packages: read is required for a private @brandtstack dep. A reusable
+      # workflow's own permissions CAP the caller's, so the caller granting
+      # packages: write is NOT enough - without this the job's token has only
+      # contents: read and npm ci 403s (infra-validation.md G12).
+      packages: read
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -55,6 +62,13 @@ jobs:
   integration:
     if: inputs.needs-postgres
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # packages: read is required for a private @brandtstack dep. A reusable
+      # workflow's own permissions CAP the caller's, so the caller granting
+      # packages: write is NOT enough - without this the job's token has only
+      # contents: read and npm ci 403s (infra-validation.md G12).
+      packages: read
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
