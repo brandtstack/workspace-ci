@@ -28,6 +28,12 @@
       "allowedVersions": "<7"
     },
     {
+      "description": "Park @babel/plugin-transform-runtime 8. tilde, tend-web and buvik-web pin it at 7.29.7 via `overrides` as a guard. The v8 bump goes green but removes that guard, and the next incremental install then ERESOLVEs (v8 peers @babel/core ^8 while the tree resolves 7 via workbox-build and eslint-plugin-react-hooks). Unpark when those two move to @babel/core 8.",
+      "matchDepNames": ["@babel/plugin-transform-runtime"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
       "description": "Park ESLint 10 for repos still on 9. eslint-config-next bundles eslint-plugin-react, whose latest (7.37.5) peers at `eslint ^9.7` and errors on ESLint 10 with 'contextOrFilename.getFilename is not a function'. matchCurrentVersion scopes this to repos on 9 only, so repos already running ESLint 10 keep receiving 10.x updates. Unpark when eslint-plugin-react ships ESLint 10 support and Next picks it up.",
       "matchPackageNames": ["eslint"],
       "matchCurrentVersion": "<10",
