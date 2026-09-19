@@ -193,3 +193,17 @@ rollback is a tag swap.
 build-time vars are rendered as Docker `ARG`s into the public build log) before
 pointing it at the new tag, so the running container reports the minted version
 rather than a `SOURCE_COMMIT` short SHA.
+
+## Parked majors in the preset
+
+`default.json` disables or caps these; each rule's `description` says when to unpark it.
+
+| Package | Rule | Why |
+| --- | --- | --- |
+| `typescript` | `<7` | typescript-eslint throws on any TS 7.x |
+| `eslint` | `<10` where already on 9 | eslint-plugin-react errors on ESLint 10 |
+| `@babel/plugin-transform-runtime` | no major | consumers pin 7.29.7 via `overrides`; v8 drops that guard, then the next install ERESOLVEs |
+
+This repo's own `renovate.json` also parks the `postgres` docker major (go-ci integration service
+stays on 16 to match prod `personal-postgres`, per `infra/reference/kvm4-platform.md`, a doc, not
+the live container).
