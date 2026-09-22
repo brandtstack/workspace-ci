@@ -20,6 +20,10 @@ on:
       # attempted and this workflow behaves exactly as it did before —
       # that guard is what lets apps migrate one at a time.
       coolify-app-uuid: { type: string, default: '' }
+      # JSON for runs-on. Private repos on the self-hosted Acer runner pass
+      # '["self-hosted","priv-ci"]'. The default stays GitHub-hosted, so this public repo and
+      # every caller that does not opt in never touch the Acer. NEVER set it from a public repo.
+      runner: { type: string, default: '"ubuntu-latest"' }
     secrets:
       # All three are required together to reach the Coolify API: the CF pair
       # gets past Cloudflare Access at the edge, the bearer authenticates to
@@ -33,7 +37,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: write       # push the tag
       packages: write       # retag in GHCR

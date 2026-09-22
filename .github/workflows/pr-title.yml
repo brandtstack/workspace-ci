@@ -9,13 +9,18 @@ name: pr-title
 
 on:
   workflow_call:
+    inputs:
+      # JSON for runs-on. Private repos on the self-hosted Acer runner pass
+      # '["self-hosted","priv-ci"]'. The default stays GitHub-hosted, so this public repo and
+      # every caller that does not opt in never touch the Acer. NEVER set it from a public repo.
+      runner: { type: string, default: '"ubuntu-latest"' }
 
 permissions:
   contents: read
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     steps:
       - name: Check the PR title is a conventional commit
         env:

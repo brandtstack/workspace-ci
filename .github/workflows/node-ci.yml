@@ -30,13 +30,17 @@ on:
       # later retags that exact image as :vX.Y.Z — it is never rebuilt.
       # Set false for repos that do not deploy from a registry image.
       publish-image:     { type: boolean, default: true }
+      # JSON for runs-on. Private repos on the self-hosted Acer runner pass
+      # '["self-hosted","priv-ci"]'. The default stays GitHub-hosted, so this public repo and
+      # every caller that does not opt in never touch the Acer. NEVER set it from a public repo.
+      runner:            { type: string,  default: '"ubuntu-latest"' }
 
 permissions:
   contents: read
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: read
       # packages: read is required for a private @brandtstack dep. A reusable
@@ -61,7 +65,7 @@ jobs:
 
   integration:
     if: inputs.needs-postgres
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: read
       # packages: read is required for a private @brandtstack dep. A reusable
@@ -109,7 +113,7 @@ jobs:
   image:
     if: inputs.publish-image && github.event_name == 'pull_request'
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: read
       packages: write
