@@ -13,13 +13,17 @@ on:
       smoke-run-args:    { type: string,  default: '' }
       docker-build-args: { type: string,  default: '' }
       publish-image:     { type: boolean, default: true }
+      # JSON for runs-on. Private repos on the self-hosted Acer runner pass
+      # '["self-hosted","priv-ci"]'. The default stays GitHub-hosted, so this public repo and
+      # every caller that does not opt in never touch the Acer. NEVER set it from a public repo.
+      runner:            { type: string,  default: '"ubuntu-latest"' }
 
 permissions:
   contents: read
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -32,7 +36,7 @@ jobs:
 
   integration:
     if: inputs.needs-postgres
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     services:
       postgres:
         image: postgres:16.15-alpine
@@ -67,7 +71,7 @@ jobs:
   image:
     if: inputs.publish-image && github.event_name == 'pull_request'
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: read
       packages: write

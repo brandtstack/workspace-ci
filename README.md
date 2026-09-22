@@ -82,6 +82,22 @@ Added 2026-09-01 for `access-panel`, whose Dockerfile lives at `deploy/Dockerfil
 was no way to point CI at a non-default path, so that repo could not publish an image and was the
 last app Coolify still built from source.
 
+### Running on the self-hosted runner (private repos only)
+
+All four workflows take a **`runner:`** input — JSON for `runs-on`, default `'"ubuntu-latest"'`
+(GitHub-hosted). Private brandtstack repos opt in to the one-job, Sysbox-isolated runners on the Acer
+by passing it to **every** job, `release` included:
+
+```yaml
+    with:
+      runner: '["self-hosted","priv-ci"]'
+```
+
+⚠️ **Never set it from a public repo** — a public repo's PRs would run untrusted code on home
+hardware. This repo is public and never sets it; the launcher also refuses any job from a public repo.
+Fallback if the Acer is down: set it back to `'"ubuntu-latest"'` (spends Actions minutes).
+Operations: `priv/infra/reference/ci-runner.md`.
+
 ⚠️ **`publish-image` must match between the `ci` and `release` jobs.** `ci` alone leaves `release`
 with no artifact to promote; `release` alone fails after CI has already passed.
 
