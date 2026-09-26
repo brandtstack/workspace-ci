@@ -17,6 +17,65 @@ actually read.
 | `pr-title.yml` | conventional-commit check on the PR title |
 | `release.yml` | on merge to main: mint `vX.Y.Z`, promote the tested image, push the tag |
 
+## Inputs
+
+Every `workflow_call` input, read from the workflow files (the source of truth). All are optional.
+Booleans are real booleans in YAML; `runner` and the string inputs are quoted strings.
+
+### `node-ci.yml` (14)
+
+| Input | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `node-version` | string | `'24'` | Node version for `setup-node` in `verify` and `integration` |
+| `working-directory` | string | `'.'` | Directory for `npm ci`/`verify`/`verify:integration`, the lockfile cache path, and the Docker build context |
+| `needs-postgres` | boolean | `false` | Run the `integration` job: a `postgres:16.15-alpine` service, `DATABASE_URL` set, then `npm run verify:integration`. When `false` the job is skipped |
+| `postgres-db` | string | `'test'` | Database name created in the Postgres service and used in `DATABASE_URL` |
+| `smoke` | boolean | `true` | Boot the built image and curl `smoke-path` on the published port before pushing |
+| `smoke-port` | string | `'80'` | Container port the app listens on (published to host `8080`) |
+| `smoke-path` | string | `'/'` | Path requested by the smoke checks |
+| `smoke-internal` | boolean | `true` | Also `wget` `127.0.0.1:<smoke-port>` from inside the container (catches a server bound only to the container IP). Only runs when `smoke` is `true` |
+| `smoke-run-args` | string | `''` | Extra arguments to `docker run` for the smoke container (e.g. `-e` vars) |
+| `docker-build-args` | string | `''` | Newline-separated `build-args` for the image build |
+| `dockerfile` | string | `''` | Dockerfile path relative to the checkout root. Empty falls back to `{working-directory}/Dockerfile` (see *A non-default Dockerfile*) |
+| `private-registry` | boolean | `false` | Wire the `@brandtstack` GitHub Packages registry into `npm ci` (all jobs) and the image build (as a BuildKit secret, not a build-arg), using the caller's `GITHUB_TOKEN`. No PAT |
+| `publish-image` | boolean | `true` | Run the `image` job (PR only): build, smoke, push `ghcr.io/<repo>:sha-<head>`. Set `false` for repos that do not deploy a registry image |
+| `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` (see *Running on the self-hosted runner*) |
+
+### `go-ci.yml` (11)
+
+Runs `make verify` (and `make verify-integration` when `needs-postgres`) instead of npm scripts.
+
+| Input | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `go-version` | string | `'1.27'` | Go version for `setup-go` |
+| `node-version` | string | `'24'` | Node version installed alongside Go in `verify` and `integration` |
+| `needs-postgres` | boolean | `false` | Run the `integration` job against a Postgres service (`DATABASE_URL` carries `?sslmode=disable`) |
+| `postgres-db` | string | `'test'` | Database name for that service |
+| `smoke` | boolean | `true` | Boot the image and curl `smoke-path` on the published port. No in-container check (distroless has no shell) |
+| `smoke-port` | string | `'80'` | Container port the app listens on (published to host `8080`) |
+| `smoke-path` | string | `'/'` | Path requested by the smoke check |
+| `smoke-run-args` | string | `''` | Extra arguments to `docker run` for the smoke container |
+| `docker-build-args` | string | `''` | Newline-separated `build-args` for the image build |
+| `publish-image` | boolean | `true` | Run the `image` job (PR only): build, smoke, push `:sha-<head>`. Build context is always `.` and the Dockerfile is `./Dockerfile` |
+| `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
+
+### `pr-title.yml` (1)
+
+| Input | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
+
+### `release.yml` (3 inputs, 3 secrets)
+
+| Input | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `publish-image` | boolean | `true` | Must match the caller's `node-ci`/`go-ci` setting. `false` mints the git tag only, with no registry work |
+| `coolify-app-uuid` | string | `''` | Coolify application uuid. Empty means no deploy is attempted (see *Deploying to Coolify*). Only acts when `publish-image` is also `true` |
+| `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
+
+Secrets (all optional, but needed **together** to deploy): `COOLIFY_TOKEN`, `CF_ACCESS_CLIENT_ID`,
+`CF_ACCESS_CLIENT_SECRET`.
+
 ## Consuming it
 
 `.github/workflows/ci.yml`:
@@ -177,7 +236,7 @@ race on every merge and the webhook deploys the *previous* tag.
   `pr-title / lint` — not `verify` / `image` / `pr-title`. A name that never
   reports blocks every PR permanently.
   ⚠️ **Never require a check that can skip.** `ci / integration` is skipped
-  wherever `postgres: false`, and a skipped job never reports — require it only
+  wherever `needs-postgres: false`, and a skipped job never reports — require it only
   on repos that actually run it. Likewise `ci / image` on a repo with
   `publish-image: false`. A repo with no CI at all (this one) requires a PR and
   **no** status check.
