@@ -23,7 +23,7 @@ on:
       # workflow installs dependencies. Off by default, so the callers that consume
       # no private package are byte-identical to before.
       # The token is the caller's own GITHUB_TOKEN - sufficient because each package
-      # grants the consuming repo read access (infra-validation.md G4), so there is
+      # grants the consuming repo read access (infra-validation-apps.md G4), so there is
       # no PAT here and nothing to rotate.
       private-registry:  { type: boolean, default: false }
       # Publish the built image to GHCR as :sha-<head>. The release workflow
@@ -46,7 +46,7 @@ jobs:
       # packages: read is required for a private @brandtstack dep. A reusable
       # workflow's own permissions CAP the caller's, so the caller granting
       # packages: write is NOT enough - without this the job's token has only
-      # contents: read and npm ci 403s (infra-validation.md G12).
+      # contents: read and npm ci 403s (infra-validation-apps.md G12).
       packages: read
     defaults:
       run:
@@ -71,7 +71,7 @@ jobs:
       # packages: read is required for a private @brandtstack dep. A reusable
       # workflow's own permissions CAP the caller's, so the caller granting
       # packages: write is NOT enough - without this the job's token has only
-      # contents: read and npm ci 403s (infra-validation.md G12).
+      # contents: read and npm ci 403s (infra-validation-apps.md G12).
       packages: read
     defaults:
       run:
@@ -144,7 +144,7 @@ jobs:
           build-args: ${{ inputs.docker-build-args }}
           # A BuildKit secret, NOT a build-arg: an ARG renders into the build log in
           # clear, which is how this workspace leaked secrets twice. Verified clean
-          # (infra-validation.md G6). Format is <secret-id>=<env var name>.
+          # (infra-validation-apps.md G6). Format is <secret-id>=<env var name>.
           secret-envs: ${{ inputs.private-registry && 'npm_token=NPM_TOKEN' || '' }}
 
       - name: Boot and smoke test
