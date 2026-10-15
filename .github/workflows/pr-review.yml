@@ -77,8 +77,10 @@ jobs:
             *) echo "pr-review: model $MODEL is not allowed, using claude-sonnet-5-5"; MODEL='claude-sonnet-5-5' ;;
           esac
           clamp() { # variable, input name, default, cap
-            local v="${!1}"
+            local v="${!1}" orig="${!1}"
             case "$v" in ''|*[!0-9]*) echo "pr-review: $2 '$v' is not a number, using $3"; v="$3" ;; esac
+            v="${v#"${v%%[!0]*}"}" # leading zeros off: 0005 is 5, and 0000000000000 is zero
+            if [ -z "$v" ]; then echo "pr-review: $2 '$orig' is not above 0, using $3"; v="$3"; fi
             if [ "${#v}" -gt 9 ] || [ "$v" -gt "$4" ]; then echo "pr-review: $2 $v is over $4, using $4"; v="$4"; fi
             printf -v "$1" '%s' "$v"
           }
