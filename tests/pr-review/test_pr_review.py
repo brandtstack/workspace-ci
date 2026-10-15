@@ -263,6 +263,14 @@ def rows(port, dead_port, tmp):
         'claims.job_workflow_ref == "brandtstack/workspace-ci/.github/workflows/pr-review.yml@refs/heads/main"' in readme
         and "startsWith" not in readme)
 
+    # The Renovate config check: exact-pinned, strict, both files, Node 24, GitHub-hosted.
+    add("static: tests job validates default.json and renovate.json, strict, exact-pinned",
+        re.search(r"--package renovate@\d+\.\d+\.\d+ -- renovate-config-validator --strict default\.json renovate\.json",
+                  tests_run), tests_run)
+    add("static: tests job sets up Node 24 for Renovate",
+        any(s.get("uses", "").startswith("actions/setup-node@") and str(s.get("with", {}).get("node-version")) == "24"
+            for j in jobs for s in j["steps"]))
+
     # Happy path: first review posts one comment.
     r = Run(port, fresh())
     req = r.posts("/v1/messages")
@@ -430,6 +438,18 @@ def rows(port, dead_port, tmp):
     add("clamp: max-diff-bytes capped at 307200", not r.posts("/v1/messages") and "the cap is 307200" in r.body(), r.out)
     r = Run(port, fresh(), diff=file_diff("src/big.ts", "+" + "y" * 320000 + "\n"), env={"MAX_DIFF_BYTES": "9" * 30})
     add("clamp: a number too long for test(1) is capped too", not r.posts("/v1/messages") and "the cap is 307200" in r.body(), r.out + r.err)
+
+    # Zero is not a limit: it falls back to the default, like a non-number.
+    for val in ("0", "00", "0" * 13):
+        r = Run(port, fresh(), env={"MAX_TOKENS": val, "MAX_DIFF_BYTES": val})
+        sent = r.posts("/v1/messages")[0][3] if r.posts("/v1/messages") else {}
+        add("clamp: %s falls back to the defaults, and the diff is reviewed" % ("0" * len(val)),
+            sent.get("max_tokens") == 4096 and "max-tokens '%s' is not above 0, using 4096" % val in r.out
+            and "max-diff-bytes '%s' is not above 0, using 153600" % val in r.out, r.out)
+    r = Run(port, fresh(), env={"MAX_TOKENS": "0005", "MAX_DIFF_BYTES": "0000000000000300000"})
+    sent = r.posts("/v1/messages")[0][3] if r.posts("/v1/messages") else {}
+    add("clamp: leading zeros are read as a number, not as too long",
+        sent.get("max_tokens") == 5 and "over" not in r.out.replace("pr-review: diff", ""), r.out)
 
     # Model text cannot @mention anyone.
     r = Run(port, fresh(), mode={"text": "cc @someone and @acme/team, mail a@b.example"})
