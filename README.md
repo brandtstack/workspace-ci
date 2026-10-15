@@ -167,26 +167,63 @@ no credential is ever a command-line argument: headers and bodies go to `curl` b
 is posted as one PR comment by `github-actions[bot]` that starts with `<!-- pr-review -->`; later
 pushes edit that comment. A comment by anyone else, even one quoting the marker, is never touched.
 
-**What the model sees:** the diff, minus lockfiles and generated files (`*.min.js`, `*.map`,
-`*_generated.go`, and `dist/`, `build/`, `vendor/`, `coverage/` at the repo root). The left-out
-files are listed at the bottom of the comment. Lockfiles are scanned instead: an added `resolved` or
-`tarball` line pointing anywhere but `registry.npmjs.org` (or `npm.pkg.github.com` for
-`@brandtstack`) puts a warning in the comment. Paths git quotes (tabs, non-ASCII) keep their quotes.
+**What the model sees:** the PR title and the diff, minus lockfiles and generated files
+(`*.min.js`, `*.map`, `*_generated.go`, and `dist/`, `build/`, `vendor/`, `coverage/` at the repo
+root). The diff sits between tags with a random name per run, so a diff cannot close them. The
+left-out files are listed at the bottom of the comment (the first 50, then "and N more"). Lockfiles
+are scanned instead: every added `resolved` or `tarball` value that does not start with
+`https://registry.npmjs.org/` (or `https://npm.pkg.github.com/` for `@brandtstack`) puts a warning
+in the comment, whatever its scheme (`git+ssh:`, `github:`, `file:`, scp-style), and so does any
+added lockfile line with a JSON `\u` escape. npm workspace links (`"resolved": "packages/x"`) warn
+too. Paths git quotes (tabs, non-ASCII) keep their quotes.
 
-**It never fails the PR once it runs:** a skip, missing variables, a denied exchange (the API
-answers an opaque `401`) or an API error writes a warning to the log and the job summary and exits
-0. After an earlier review, a failure leaves that review up with a "Not re-reviewed at `<sha>`"
-line on top; a push that leaves only lockfiles or generated files replaces it with "nothing to
-review". The job times out after 10 minutes, and every `curl` and `gh` call has its own limit.
-Never make it a required check.
+**It never fails the PR once it runs:** a skip, missing variables, an unreadable diff, a denied
+exchange (the API answers an opaque `401`) or an API error writes a warning to the log and the job
+summary and exits 0. After an earlier review, a failure leaves that review up with a "Not
+re-reviewed at `<sha>`" line on top; a push that leaves only lockfiles or generated files replaces
+it with "nothing to review". The job times out after 10 minutes, and every `curl` and `gh` call has
+its own limit. Never make it a required check.
 
 ⚠️ **A missing permission is a hard failure.** A caller that grants less than
 `pull-requests: write` and `id-token: write` fails at workflow startup, before the job runs, and
 that does show as a failed check.
 
-The diff is untrusted input; the worst a hostile diff can do is a misleading comment. The federation
-rule that lets a run mint a token lives in the Claude Console, not here. Scope it to private repos of
-the org and to `pull_request` runs, so this public repo can never mint one.
+The diff is untrusted input; the worst a hostile diff can do is a misleading comment. The model's
+text is posted as is, except that every `@name` gets a zero-width space after the `@`, so a comment
+can never mention a person or a team.
+
+#### The federation rule
+
+The rule that lets a run mint a token lives in the Claude Console, not here, and **it is the only
+thing that decides which runs get a token**. The org `vars.ANTHROPIC_*` ids are not secret. Under
+`pull_request` a PR's own copy of its workflows runs, so any workflow in any matching repo can ask
+GitHub for an OIDC token with the `https://api.anthropic.com` audience. "Private repos of the org
+plus `pull_request`" is therefore too wide: it hands a token to every workflow in those repos.
+Scope the rule to this one reusable workflow, with all of these:
+
+| Claim | Value |
+| --- | --- |
+| subject | `repo:brandtstack@316569120/*` |
+| `repository_owner` | `brandtstack` |
+| `repository_owner_id` | `316569120` |
+| `repository_visibility` | `private` |
+| `event_name` | `pull_request` |
+| CEL | `claims.job_workflow_ref.startsWith("brandtstack/workspace-ci/.github/workflows/pr-review.yml@")` |
+
+Scope: `workspace:developer`, token lifetime 10 minutes. Use a dedicated workspace with a spend
+limit. This is the claim set the live rule is meant to carry; of it, only the subject has been read
+back from a real exchange (below).
+
+⚠️ **The subject is in GitHub's id form, not `repo:brandtstack/…`.** For a PR run the `sub` claim
+looks like `repo:brandtstack@316569120/<repo>@<repo id>:pull_request` (owner and repo each
+followed by `@<numeric id>`). A subject prefix of `repo:brandtstack/*` never matches: the exchange
+fails with `match_subject_prefix`, which the job only sees as an opaque `401`. Measured on
+a private org repo, 2026-10-15, from the Console's authentication events: the `repo:brandtstack/*`
+exchange failed with that reason; `repo:brandtstack@316569120/*` exchanged a token.
+
+**Not yet probed:** that the CEL condition *rejects* a run whose `job_workflow_ref` is some other
+workflow. Only the positive case has been measured. Until a run from a foreign workflow has been
+seen to fail the exchange, treat the CEL as configured, not as proven.
 
 Tests: `python3 tests/pr-review/test_pr_review.py` (fake `gh`, stub API on `127.0.0.1`, `curl`
 and `jq` wrapped to catch a credential in argv; nothing leaves the machine). `tests.yml` runs them

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A stand-in for the four `gh` calls pr-review.yml makes. State lives in the JSON file $FAKE_GH_STATE:
-{"diff": str, "diff_fails": bool, "comments": [{"id": int, "user": {"login": str}, "body": str}],
+{"diff": str, "diff_fails": bool, "diff_err": str, "comments": [{"id": int, "user": {"login": str}, "body": str}],
  "patch_fails": bool, "calls": [[argv...]]}
 Comment lists are served the way `gh api --paginate` prints them: one JSON array per page, two
 comments per page, so the workflow has to merge the pages.
@@ -29,7 +29,7 @@ def arg(flag):
 if argv[:2] == ["pr", "diff"]:
     save()
     if state.get("diff_fails"):
-        sys.stderr.write("HTTP 406: diff too large\n")
+        sys.stderr.write(state.get("diff_err", "HTTP 406: diff too large\n"))
         sys.exit(1)
     sys.stdout.write(state["diff"])
 elif argv[:2] == ["pr", "comment"]:

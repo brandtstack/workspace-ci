@@ -91,16 +91,18 @@ jobs:
               "$T/comments.json")" || stop "could not read the PR's comments"
           }
 
-          # Edit our comment, or add it. The body goes by file only.
+          # Edit our comment, or add it. The body goes by file only. A zero-width space after every
+          # `@` that starts a name, so text from the model or the diff can never mention anyone.
           upsert() {
+            sed "s/@\([A-Za-z0-9]\)/@$(printf '\342\200\213')\1/g" "$1" > "$T/post.md"
             find_comment
             if [ -n "$COMMENT_ID" ]; then
-              jq -n --rawfile b "$1" '{body: $b}' \
+              jq -n --rawfile b "$T/post.md" '{body: $b}' \
                 | timeout 60 gh api -X PATCH "repos/$REPO/issues/comments/$COMMENT_ID" --input - > /dev/null \
                 || stop "could not update comment $COMMENT_ID"
               echo "pr-review: updated comment $COMMENT_ID"
             else
-              timeout 60 gh pr comment "$PR" -R "$REPO" --body-file "$1" > /dev/null \
+              timeout 60 gh pr comment "$PR" -R "$REPO" --body-file "$T/post.md" > /dev/null \
                 || stop "could not post the comment"
               echo "pr-review: posted a new comment"
             fi
@@ -111,13 +113,17 @@ jobs:
             cat "$T/notes.md"
             if [ -s "$T/skipped.txt" ]; then
               printf '\n<details><summary>Left out of the review: %s file(s)</summary>\n\n' "$(wc -l < "$T/skipped.txt")"
-              sed 's/^/- `/; s/$/`/' "$T/skipped.txt"
+              head -n 50 "$T/skipped.txt" | sed 's/^/- `/; s/$/`/'
+              n="$(wc -l < "$T/skipped.txt")"
+              [ "$n" -gt 50 ] && printf -- '- and %s more\n' "$((n - 50))"
               printf '\n</details>\n'
             fi
           }
 
-          # A failure after the diff was read: an earlier review stays up, but says it is stale.
+          # A failure from the diff read on: an earlier review stays up, but says it is stale. The
+          # reason goes on one line, so the next run's note replaces it whole.
           fail() {
+            set -- "$(printf '%s' "$1" | tr '\r\n' '  ')"
             find_comment
             if [ -n "$COMMENT_ID" ]; then
               jq -rs --argjson id "$COMMENT_ID" '[add[] | select(.id == $id)][0].body' "$T/comments.json" \
@@ -137,11 +143,11 @@ jobs:
 
           # 2. The diff. Lockfiles and generated files stay out of the prompt. A file's path comes from
           # its +++/--- line (rename to, or the a/ side of `diff --git` for a binary file), so names
-          # with spaces work; names git quotes (tabs, non-ASCII) keep their quotes. Lockfile lines that
-          # resolve from anywhere but registry.npmjs.org, or npm.pkg.github.com for @brandtstack, are
-          # flagged.
+          # with spaces work; names git quotes (tabs, non-ASCII) keep their quotes. Every added lockfile
+          # `resolved`/`tarball` value, whatever its scheme, is flagged unless it starts with
+          # https://registry.npmjs.org/ or, for @brandtstack, https://npm.pkg.github.com/.
           timeout 120 gh pr diff "$PR" -R "$REPO" > "$T/raw.diff" 2> "$T/diff.err" \
-            || stop "could not read the diff: $(head -c 300 "$T/diff.err")"
+            || fail "could not read the diff: $(head -c 300 "$T/diff.err")"
           awk -v skipped="$T/skipped.txt" -v hosts="$T/hosts.txt" '
             function flush() {
               if (block == "") return
@@ -158,11 +164,17 @@ jobs:
                 n = split(block, lines, "\n")
                 for (i = 1; i <= n; i++) {
                   l = lines[i]
-                  if (l !~ /^\+/ || l !~ /(resolved|tarball)/ || l !~ /https?:\/\//) continue
-                  u = l; sub(/.*https?:\/\//, "", u); host = u; sub(/[\/:"].*/, "", host)
-                  if (host == "registry.npmjs.org") continue
-                  if (host == "npm.pkg.github.com" && l ~ /@brandtstack\//) continue
-                  print p ": " host > hosts
+                  if (l !~ /^\+/) continue
+                  # JSON escapes would hide a key or value from the match below; npm decodes them.
+                  if (l ~ /\\u[0-9A-Fa-f]/) { print p ": a \\u escape on an added line" > hosts; continue }
+                  # The key, quoted or not, then `:` and/or space, then the value up to a quote,
+                  # space, comma or brace (npm, yarn, and the inline pnpm `{..., tarball: ...}`).
+                  if (!match(l, /(^\+|[^A-Za-z0-9_.-])"?(resolved|tarball)("[ \t]*:|[ \t]*:|[ \t])[ \t]*"?/)) continue
+                  v = substr(l, RSTART + RLENGTH); sub(/["\t ,}].*/, "", v)
+                  if (v ~ /^https:\/\/registry\.npmjs\.org\//) continue
+                  if (v ~ /^https:\/\/npm\.pkg\.github\.com\/(download\/)?@brandtstack\//) continue
+                  gsub(/`/, "", v)
+                  print p ": " substr(v, 1, 200) > hosts
                 }
               }
               block = ""; path = ""
@@ -176,9 +188,9 @@ jobs:
           ' "$T/raw.diff" > "$T/review.diff"
           touch "$T/skipped.txt" "$T/hosts.txt"
           if [ -s "$T/hosts.txt" ]; then
-            echo "::warning::pr-review: a lockfile resolves from an unexpected host: $(sort -u "$T/hosts.txt" | tr '\n' ' ')"
+            echo "::warning::pr-review: a lockfile resolves from an unexpected source: $(sort -u "$T/hosts.txt" | tr '\n' ' ')"
             {
-              printf '\n> [!WARNING]\n> A lockfile in this PR resolves packages from a host other than `registry.npmjs.org` (or `npm.pkg.github.com` for `@brandtstack`):\n'
+              printf '\n> [!WARNING]\n> A lockfile in this PR resolves packages from somewhere other than `https://registry.npmjs.org/` (or `https://npm.pkg.github.com/` for `@brandtstack`):\n'
               sort -u "$T/hosts.txt" | sed 's/^/> - `/; s/$/`/'
             } >> "$T/notes.md"
           fi
@@ -200,9 +212,9 @@ jobs:
           # credential is ever an argument: headers and bodies go by file, built by builtins or jq.
           [ -n "$FEDERATION_RULE_ID" ] && [ -n "$ORGANIZATION_ID" ] && [ -n "$SERVICE_ACCOUNT_ID" ] \
             || fail "vars.ANTHROPIC_FEDERATION_RULE_ID, _ORGANIZATION_ID and _SERVICE_ACCOUNT_ID must all be set"
-          [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] \
+          [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] \
             || fail "no OIDC token available: the caller must grant id-token: write"
-          printf 'Authorization: Bearer %s\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" > "$T/oidc.h"
+          printf 'Authorization: Bearer %s\n' "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" > "$T/oidc.h"
           curl -sS --fail --max-time 30 -H "@$T/oidc.h" -o "$T/oidc.json" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com"
           rm -f "$T/oidc.h"
@@ -250,10 +262,14 @@ jobs:
 
           When you find nothing, answer exactly: **Verdict:** no findings.
           PROMPT
+          # The diff's tag name is random per run, so a diff cannot close it early.
+          tag="diff-$(od -An -tx1 -N12 /dev/urandom | tr -d ' \n')"
           jq -n --arg m "$MODEL" --argjson n "$MAX_TOKENS" --rawfile s "$T/system.txt" \
-                --arg t "$TITLE" --rawfile d "$T/review.diff" \
+                --arg t "$TITLE" --rawfile d "$T/review.diff" --arg g "$tag" \
             '{model: $m, max_tokens: $n, system: $s,
-              messages: [{role: "user", content: ("PR title: " + $t + "\n\n<diff>\n" + $d + "\n</diff>")}]}' \
+              messages: [{role: "user", content: ("PR title: " + $t
+                + "\n\nThe diff is everything between <" + $g + "> and </" + $g + ">.\n\n<" + $g + ">\n"
+                + $d + "\n</" + $g + ">")}]}' \
             > "$T/request.json"
           code="$(curl -sS --max-time 300 -o "$T/response.json" -w '%{http_code}' -X POST "$API/v1/messages" \
                     -H "@$T/auth.h" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
