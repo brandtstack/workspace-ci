@@ -9,6 +9,13 @@
   "prConcurrentLimit": 3,
   "packageRules": [
     {
+      "description": "Leave the pr-review.yml caller on @main. The Anthropic federation rule only accepts job_workflow_ref == brandtstack/workspace-ci/.github/workflows/pr-review.yml@refs/heads/main, and pinDigests would rewrite @main to @<sha> # main, which the rule then rejects (an opaque 401, no review). Scoped to the caller file the README prescribes, so node-ci, go-ci, pr-title and release stay pinned.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["brandtstack/workspace-ci"],
+      "matchFileNames": [".github/workflows/pr-review.yml"],
+      "enabled": false
+    },
+    {
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "all non-major",
       "automerge": true

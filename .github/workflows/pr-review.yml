@@ -92,9 +92,11 @@ jobs:
           }
 
           # Edit our comment, or add it. The body goes by file only. A zero-width space after every
-          # `@` that starts a name, so text from the model or the diff can never mention anyone.
+          # `@` that starts a name, and every HTML entity for `@` becomes one, so text from the model
+          # or the diff can never mention anyone. Code spans too: a span is easy to fake.
           upsert() {
-            sed "s/@\([A-Za-z0-9]\)/@$(printf '\342\200\213')\1/g" "$1" > "$T/post.md"
+            z="$(printf '\342\200\213')"
+            sed -E "s/&(#0*64|#[xX]0*40|[cC][oO][mM][mM][aA][tT]);/@$z/g; s/@([A-Za-z0-9])/@$z\1/g" "$1" > "$T/post.md"
             find_comment
             if [ -n "$COMMENT_ID" ]; then
               jq -n --rawfile b "$T/post.md" '{body: $b}' \
@@ -143,9 +145,10 @@ jobs:
 
           # 2. The diff. Lockfiles and generated files stay out of the prompt. A file's path comes from
           # its +++/--- line (rename to, or the a/ side of `diff --git` for a binary file), so names
-          # with spaces work; names git quotes (tabs, non-ASCII) keep their quotes. Every added lockfile
-          # `resolved`/`tarball` value, whatever its scheme, is flagged unless it starts with
-          # https://registry.npmjs.org/ or, for @brandtstack, https://npm.pkg.github.com/.
+          # with spaces work; names git quotes (tabs, non-ASCII) keep their quotes. In npm, yarn and
+          # pnpm lockfiles, every added `resolved`/`tarball` source, whatever its scheme, is flagged
+          # unless it starts with https://registry.npmjs.org/ or, for @brandtstack,
+          # https://npm.pkg.github.com/.
           timeout 120 gh pr diff "$PR" -R "$REPO" > "$T/raw.diff" 2> "$T/diff.err" \
             || fail "could not read the diff: $(head -c 300 "$T/diff.err")"
           awk -v skipped="$T/skipped.txt" -v hosts="$T/hosts.txt" '
@@ -153,14 +156,18 @@ jobs:
               if (block == "") return
               p = path
               if (p == "") { h = substr(header, 14); p = substr(h, 1, (length(h) - 3) / 2) }
-              lock = p ~ /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|go\.sum|Cargo\.lock|poetry\.lock|uv\.lock|composer\.lock|Gemfile\.lock)$/
+              # Only the lockfiles the scan below can read leave the prompt, plus go.sum (hashes
+              # only) and the binary bun.lockb. Cargo.lock, uv.lock, bun.lock and the rest go to
+              # the model, since nothing else would look at them.
+              scan = p ~ /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$/
+              lock = scan || p ~ /(^|\/)(go\.sum|bun\.lockb)$/
               skip = lock \
                   || p ~ /^(dist|build|vendor|coverage)\// \
                   || p ~ /(^|\/)(node_modules|\.next)\// \
                   || p ~ /\.(min\.js|min\.css|map|snap|pb\.go)$/ \
                   || p ~ /(_generated\.go|\.generated\.[a-z]+)$/
               if (skip) print p > skipped; else printf "%s", block
-              if (lock) {
+              if (scan) {
                 n = split(block, lines, "\n")
                 for (i = 1; i <= n; i++) {
                   l = lines[i]
@@ -171,6 +178,10 @@ jobs:
                   # space, comma or brace (npm, yarn, and the inline pnpm `{..., tarball: ...}`).
                   if (!match(l, /(^\+|[^A-Za-z0-9_.-])"?(resolved|tarball)("[ \t]*:|[ \t]*:|[ \t])[ \t]*"?/)) continue
                   v = substr(l, RSTART + RLENGTH); sub(/["\t ,}].*/, "", v)
+                  # A source has a scheme (https:, git+ssh:, github:, file:), is scp-style or is a
+                  # path. A version (`"resolved": "^1.0.0"` for a dep named resolved) or the `{`
+                  # of a package named tarball is not one.
+                  if (v !~ /^[A-Za-z][A-Za-z0-9+.-]*:/ && v !~ /^[^\/:@]+@[^\/:]+:/ && v !~ /\// && v != "") continue
                   if (v ~ /^https:\/\/registry\.npmjs\.org\//) continue
                   if (v ~ /^https:\/\/npm\.pkg\.github\.com\/(download\/)?@brandtstack\//) continue
                   gsub(/`/, "", v)
@@ -180,8 +191,9 @@ jobs:
               block = ""; path = ""
             }
             /^diff --git / { flush(); header = $0 }
-            /^\+\+\+ b\// && path == "" { path = substr($0, 7) }
-            /^--- a\// && path == "" { path = substr($0, 7) }
+            # git ends these two headers with a tab when the path has a space in it.
+            /^\+\+\+ b\// && path == "" { path = substr($0, 7); sub(/\t$/, "", path) }
+            /^--- a\// && path == "" { path = substr($0, 7); sub(/\t$/, "", path) }
             /^rename to / { path = substr($0, 11) }
             { block = block $0 "\n" }
             END { flush() }
@@ -190,7 +202,7 @@ jobs:
           if [ -s "$T/hosts.txt" ]; then
             echo "::warning::pr-review: a lockfile resolves from an unexpected source: $(sort -u "$T/hosts.txt" | tr '\n' ' ')"
             {
-              printf '\n> [!WARNING]\n> A lockfile in this PR resolves packages from somewhere other than `https://registry.npmjs.org/` (or `https://npm.pkg.github.com/` for `@brandtstack`):\n'
+              printf '\n> [!WARNING]\n> An npm, yarn or pnpm lockfile in this PR resolves packages from somewhere other than `https://registry.npmjs.org/` (or `https://npm.pkg.github.com/` for `@brandtstack`):\n'
               sort -u "$T/hosts.txt" | sed 's/^/> - `/; s/$/`/'
             } >> "$T/notes.md"
           fi
