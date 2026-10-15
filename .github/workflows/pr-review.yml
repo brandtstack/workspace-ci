@@ -68,6 +68,22 @@ jobs:
           MARKER='<!-- pr-review -->'
           BOT='github-actions[bot]'
           SHORT="${HEAD_SHA:0:7}"
+
+          # Caller inputs are bounded here, since any org repo's PR can pass anything to a run that
+          # spends the org's token. Out of bounds is a log line and the default or the cap, not a
+          # failure.
+          case "$MODEL" in
+            claude-sonnet-5-5|claude-haiku-5-5) ;;
+            *) echo "pr-review: model $MODEL is not allowed, using claude-sonnet-5-5"; MODEL='claude-sonnet-5-5' ;;
+          esac
+          clamp() { # variable, input name, default, cap
+            local v="${!1}"
+            case "$v" in ''|*[!0-9]*) echo "pr-review: $2 '$v' is not a number, using $3"; v="$3" ;; esac
+            if [ "${#v}" -gt 9 ] || [ "$v" -gt "$4" ]; then echo "pr-review: $2 $v is over $4, using $4"; v="$4"; fi
+            printf -v "$1" '%s' "$v"
+          }
+          clamp MAX_TOKENS max-tokens 4096 8192
+          clamp MAX_DIFF_BYTES max-diff-bytes 153600 307200
           umask 077
           T="$(mktemp -d "${RUNNER_TEMP:-/tmp}/pr-review.XXXXXX")"
           trap 'rm -rf "$T"' EXIT
@@ -146,12 +162,19 @@ jobs:
           # 2. The diff. Lockfiles and generated files stay out of the prompt. A file's path comes from
           # its +++/--- line (rename to, or the a/ side of `diff --git` for a binary file), so names
           # with spaces work; names git quotes (tabs, non-ASCII) keep their quotes. In npm, yarn and
-          # pnpm lockfiles, every added `resolved`/`tarball` source, whatever its scheme, is flagged
-          # unless it starts with https://registry.npmjs.org/ or, for @brandtstack,
-          # https://npm.pkg.github.com/.
+          # pnpm lockfiles, every added source, whatever its scheme, is flagged unless it starts
+          # with https://registry.npmjs.org/ or, for @brandtstack, https://npm.pkg.github.com/.
           timeout 120 gh pr diff "$PR" -R "$REPO" > "$T/raw.diff" 2> "$T/diff.err" \
             || fail "could not read the diff: $(head -c 300 "$T/diff.err")"
-          awk -v skipped="$T/skipped.txt" -v hosts="$T/hosts.txt" '
+          awk -v skipped="$T/skipped.txt" -v hosts="$T/hosts.txt" -v sq="'" '
+            BEGIN {
+              # A source key, quoted or not, then `:` and/or space, then an opening quote if any.
+              q = "[\"" sq "]"
+              KEY = "(^\\+|[^A-Za-z0-9_.-])" q "?(resolved|tarball|resolution|repo|directory)(" q "[ \t]*:|[ \t]*:|[ \t])[ \t]*" q "?"
+              # The value ends at a quote, space, comma or brace.
+              END_OF_VALUE = "[\"" sq "\t ,}].*"
+            }
+            function flag(v) { gsub(/`/, "", v); print p ": " substr(v, 1, 200) > hosts }
             function flush() {
               if (block == "") return
               p = path
@@ -174,18 +197,32 @@ jobs:
                   if (l !~ /^\+/) continue
                   # JSON escapes would hide a key or value from the match below; npm decodes them.
                   if (l ~ /\\u[0-9A-Fa-f]/) { print p ": a \\u escape on an added line" > hosts; continue }
-                  # The key, quoted or not, then `:` and/or space, then the value up to a quote,
-                  # space, comma or brace (npm, yarn, and the inline pnpm `{..., tarball: ...}`).
-                  if (!match(l, /(^\+|[^A-Za-z0-9_.-])"?(resolved|tarball)("[ \t]*:|[ \t]*:|[ \t])[ \t]*"?/)) continue
-                  v = substr(l, RSTART + RLENGTH); sub(/["\t ,}].*/, "", v)
-                  # A source has a scheme (https:, git+ssh:, github:, file:), is scp-style or is a
-                  # path. A version (`"resolved": "^1.0.0"` for a dep named resolved) or the `{`
-                  # of a package named tarball is not one.
-                  if (v !~ /^[A-Za-z][A-Za-z0-9+.-]*:/ && v !~ /^[^\/:@]+@[^\/:]+:/ && v !~ /\// && v != "") continue
-                  if (v ~ /^https:\/\/registry\.npmjs\.org\//) continue
-                  if (v ~ /^https:\/\/npm\.pkg\.github\.com\/(download\/)?@brandtstack\//) continue
-                  gsub(/`/, "", v)
-                  print p ": " substr(v, 1, 200) > hosts
+                  # Every key on the line: npm and yarn `resolved`, Yarn Berry `resolution: "name@src"`,
+                  # and pnpm `resolution: {tarball: ..., repo: ..., directory: ...}`.
+                  rest = l
+                  while (match(rest, KEY)) {
+                    k = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+                    v = rest; sub(END_OF_VALUE, "", v)
+                    key = k; gsub(/[^a-z]/, "", key)
+                    if (key == "repo" || key == "directory") {
+                      # A git or local source, but only inside a pnpm resolution map: a dependency
+                      # may be named either.
+                      if (l ~ /resolution:[ \t]*\{/) flag(v)
+                      continue
+                    }
+                    if (key == "resolution") {
+                      if (v ~ /^\{/) continue  # a pnpm map: its own keys come next
+                      sub(/^@?[^@]*@/, "", v)  # Yarn Berry: name@source
+                      if (v ~ /^npm:/ && v !~ /^npm:\/\//) continue
+                    }
+                    # A source has a scheme (https:, git+ssh:, github:, file:), is scp-style or is a
+                    # path. A version (`"resolved": "^1.0.0"` for a dep named resolved) or the `{`
+                    # of a package named tarball is not one.
+                    if (v !~ /^[A-Za-z][A-Za-z0-9+.-]*:/ && v !~ /^[^\/:@]+@[^\/:]+:/ && v !~ /\// && v != "") continue
+                    if (v ~ /^https:\/\/registry\.npmjs\.org\//) continue
+                    if (v ~ /^https:\/\/npm\.pkg\.github\.com\/(download\/)?@brandtstack\//) continue
+                    flag(v)
+                  }
                 }
               }
               block = ""; path = ""

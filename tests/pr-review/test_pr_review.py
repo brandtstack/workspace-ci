@@ -258,6 +258,7 @@ def rows(port, dead_port, tmp):
     add("static: README caller example uses pr-review.yml@main",
         "uses: brandtstack/workspace-ci/.github/workflows/pr-review.yml@main\n" in readme
         and "pr-review.yml@<sha>" not in readme)
+    add("static: README does not call main reviewed", "has been reviewed" not in readme and "requires a pull request" in readme)
     add("static: README CEL is an exact match on refs/heads/main",
         'claims.job_workflow_ref == "brandtstack/workspace-ci/.github/workflows/pr-review.yml@refs/heads/main"' in readme
         and "startsWith" not in readme)
@@ -350,6 +351,24 @@ def rows(port, dead_port, tmp):
             + spaced_file("my dir/package-lock.json", '+"resolved": "https://evil.example/s.tgz",\n'))
     add("lockfile: under a spaced directory, still a lockfile (out of the prompt, scanned)",
         "evil.example" not in r.prompt() and "[!WARNING]" in r.body() and "- `my dir/package-lock.json`" in r.body(), r.body())
+    # pnpm and Yarn Berry source shapes.
+    def lockf(name, lines):
+        return file_diff("src/a.ts") + file_diff(name, "".join("+%s\n" % l for l in lines))
+    for name, line, value, what in (
+            ("pnpm-lock.yaml", "    resolution: {commit: abc123, repo: https://evil.example/x.git, type: git}",
+             "https://evil.example/x.git", "pnpm git repo"),
+            ("pnpm-lock.yaml", "    resolution: {directory: ../evil, type: directory}", "../evil", "pnpm directory"),
+            ("pnpm-lock.yaml", "    resolution: {directory: evil, type: directory}", "evil", "pnpm one-word directory"),
+            ("pnpm-lock.yaml", "    resolution: {integrity: sha512-x, tarball: 'file:x.tgz'}", "file:x.tgz", "single-quoted tarball"),
+            ("yarn.lock", '  resolution: "pkg@https://evil.example/p.tgz"', "https://evil.example/p.tgz", "Yarn Berry https"),
+            ("yarn.lock", '  resolution: "@scope/pkg@git+ssh://git@evil.example/x.git"', "git+ssh://git@evil.example/x.git", "Yarn Berry scoped git"),
+            ("yarn.lock", '  resolution: "pkg@file:../evil"', "file:../evil", "Yarn Berry file")):
+        r = Run(port, fresh(), diff=lockf(name, [line]))
+        add("lockfile: %s warned" % what, "[!WARNING]" in r.body() and value in r.body().replace("\u200b", ""), r.body())
+    r = Run(port, fresh(), diff=lockf("yarn.lock", ['  resolution: "lodash@npm:4.17.21"', '  resolution: "@scope/x@npm:1.0.0"'])
+            + file_diff("pnpm-lock.yaml", "+    resolution: {integrity: sha512-abc}\n+      resolution: 1.0.0\n+      directory: 2.0.0\n"))
+    add("lockfile: Yarn Berry npm: and pnpm integrity-only not warned", "[!WARNING]" not in r.body(), r.body())
+
     # Text lockfiles the scan cannot parse stay in the model's diff; go.sum and bun.lockb stay out.
     r = Run(port, fresh(), diff=file_diff("Cargo.lock", "+cargo-content\n") + file_diff("uv.lock", "+uv-content\n")
             + file_diff("poetry.lock", "+poetry-content\n") + file_diff("bun.lock", "+bun-content\n")
@@ -396,6 +415,21 @@ def rows(port, dead_port, tmp):
     r = Run(port, fresh(), mode={"text": evil}, env={"TITLE": "fix: $(touch %s)" % canary})
     add("body: shell text posted literally", evil in r.body())
     add("body: nothing in model text or title executed", not os.path.exists(canary))
+
+    # Caller inputs are clamped.
+    r = Run(port, fresh(), env={"MAX_TOKENS": "100000", "MODEL": "claude-opus-5-5"})
+    sent = r.posts("/v1/messages")[0][3] if r.posts("/v1/messages") else {}
+    add("clamp: max-tokens capped at 8192", sent.get("max_tokens") == 8192 and "max-tokens 100000 is over 8192" in r.out, r.out)
+    add("clamp: a model off the allowlist falls back to the default",
+        sent.get("model") == "claude-sonnet-5-5" and "model claude-opus-5-5 is not allowed" in r.out and r.code == 0, r.out)
+    r = Run(port, fresh(), env={"MODEL": "claude-haiku-5-5", "MAX_TOKENS": "junk"})
+    sent = r.posts("/v1/messages")[0][3] if r.posts("/v1/messages") else {}
+    add("clamp: an allowed model is kept, a non-number falls back", sent.get("model") == "claude-haiku-5-5"
+        and sent.get("max_tokens") == 4096, r.out + r.err)
+    r = Run(port, fresh(), diff=file_diff("src/big.ts", "+" + "y" * 320000 + "\n"), env={"MAX_DIFF_BYTES": "10000000"})
+    add("clamp: max-diff-bytes capped at 307200", not r.posts("/v1/messages") and "the cap is 307200" in r.body(), r.out)
+    r = Run(port, fresh(), diff=file_diff("src/big.ts", "+" + "y" * 320000 + "\n"), env={"MAX_DIFF_BYTES": "9" * 30})
+    add("clamp: a number too long for test(1) is capped too", not r.posts("/v1/messages") and "the cap is 307200" in r.body(), r.out + r.err)
 
     # Model text cannot @mention anyone.
     r = Run(port, fresh(), mode={"text": "cc @someone and @acme/team, mail a@b.example"})

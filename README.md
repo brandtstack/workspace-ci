@@ -71,11 +71,14 @@ Runs `make verify` (and `make verify-integration` when `needs-postgres`) instead
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
 | `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
-| `model` | string | `'claude-sonnet-5-5'` | Model for the Messages call |
-| `max-tokens` | number | `4096` | `max_tokens` for the review; a cut-off review says so in the comment |
-| `max-diff-bytes` | number | `153600` | Cap on the diff after lockfiles and generated files are left out. Over it, the comment says "not reviewed" and no API call is made |
+| `model` | string | `'claude-sonnet-5-5'` | Model for the Messages call. Only `claude-sonnet-5-5` and `claude-haiku-5-5`; anything else logs a line and uses the default |
+| `max-tokens` | number | `4096` | `max_tokens` for the review, at most `8192`; a cut-off review says so in the comment |
+| `max-diff-bytes` | number | `153600` | Cap on the diff after lockfiles and generated files are left out, at most `307200`. Over it, the comment says "not reviewed" and no API call is made |
 | `review-drafts` | boolean | `false` | Also review draft PRs |
 | `review-renovate` | boolean | `false` | Also review PRs opened by `renovate[bot]` |
+
+The bounds are enforced inside the workflow, because the caller is whatever a PR's branch says. A
+value over its cap logs a line and uses the cap; a value that is not a number uses the default.
 
 No secrets. The token exchange reads four **org-level Actions variables**, which are identifiers, not
 credentials: `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`,
@@ -165,10 +168,13 @@ jobs:
 ```
 
 ⚠️ **This one call stays on `@main`, not a SHA**, unlike every other `uses:` above. The federation
-rule hands out a token only to `pr-review.yml` at `refs/heads/main`, so reviewed code is what
-mints it (see *The federation rule*). A caller pinned to a SHA gets an opaque `401` and no review.
-The shared Renovate preset leaves this file's `workspace-ci` ref alone for that reason; it matches
-on the file path, so keep the call in `.github/workflows/pr-review.yml`.
+rule hands out a token only to `pr-review.yml` at `refs/heads/main` (see *The federation rule*). A
+caller pinned to a SHA gets an opaque `401` and no review. The shared Renovate preset leaves this
+file's `workspace-ci` ref alone for that reason; it matches on the file path.
+
+**Migrating an existing caller:** on the `pr-review.yml` call, replace a pinned `@<sha> # main`
+with `@main` by hand, and move the call to `.github/workflows/pr-review.yml` if it lives anywhere
+else. Renovate never undoes a pin, and in any other file it would pin `@main` again.
 
 The job asks GitHub for an OIDC token (audience `https://api.anthropic.com`), exchanges it at
 `/v1/oauth/token` for an access token that lives about ten minutes, and makes one `/v1/messages`
@@ -183,14 +189,23 @@ listed next. The diff sits between tags with a random name per run, so a diff ca
 The left-out files are listed at the bottom of the comment (the first 50, then "and N more").
 
 **Lockfiles:** `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` and `pnpm-lock.yaml` are
-scanned instead of sent. Every added `resolved` or `tarball` source that does not start with
-`https://registry.npmjs.org/` (or `https://npm.pkg.github.com/` for `@brandtstack`) puts a warning
-in the comment, whatever its scheme (`git+ssh:`, `github:`, `file:`, scp-style). So does an npm
-workspace link (`"resolved": "packages/x"`), and any added line with a JSON `\u` escape. A value
-that is a bare version or a single word is not a source and is not flagged. `go.sum` (hashes only)
-and the binary `bun.lockb` are left out unscanned. Every other lockfile (`Cargo.lock`, `uv.lock`,
-`poetry.lock`, `bun.lock`, `composer.lock`, `Gemfile.lock`) goes to the model like source, and
-counts toward `max-diff-bytes`. Paths git quotes (tabs, non-ASCII) keep their quotes.
+scanned instead of sent. On each added line the scan reads these keys, quoted with `"` or `'` or
+not:
+
+- `resolved` (npm, Yarn 1) and `tarball` (pnpm);
+- `resolution` (Yarn Berry, `"name@source"`; `name@npm:<version>` is the registry and passes);
+- `repo` and `directory` inside a pnpm `resolution: {…}` map (a git or local source; always
+  flagged).
+
+A value that does not start with `https://registry.npmjs.org/` (or `https://npm.pkg.github.com/`
+for `@brandtstack`) puts a warning in the comment, whatever its scheme (`git+ssh:`, `github:`,
+`file:`, scp-style). So does an npm workspace link (`"resolved": "packages/x"`), and any added line
+with a JSON `\u` escape. A bare version or a single word under `resolved`, `tarball` or
+`resolution` is not a source and is not flagged. Anything outside those keys is not checked.
+`go.sum` (hashes only) and the binary `bun.lockb` are left out unscanned. Every other lockfile
+(`Cargo.lock`, `uv.lock`, `poetry.lock`, `bun.lock`, `composer.lock`, `Gemfile.lock`) goes to the
+model like source, and counts toward `max-diff-bytes`. Paths git quotes (tabs, non-ASCII) keep
+their quotes.
 
 **It never fails the PR once it runs:** a skip, missing variables, an unreadable diff, a denied
 exchange (the API answers an opaque `401`) or an API error writes a warning to the log and the job
@@ -227,14 +242,19 @@ merged to `main`**:
 | `event_name` | `pull_request` |
 | CEL | `claims.job_workflow_ref == "brandtstack/workspace-ci/.github/workflows/pr-review.yml@refs/heads/main"` |
 
-Scope: `workspace:developer`, token lifetime 10 minutes. Use a dedicated workspace with a spend
-limit.
+Scope: `workspace:developer`, token lifetime 10 minutes. **Required:** a dedicated workspace with
+a spend limit. The limit is what bounds a token that reaches the wrong code.
 
 **Why an exact match on `main`.** A prefix such as `…/pr-review.yml@` accepts the file at any ref:
 an unmerged branch of this public repo could carry a `pr-review.yml` that sends the token anywhere.
-`main` is the one ref whose content has been reviewed, because the `main` ruleset requires a pull
-request and allows no force-push, no deletion and no bypass. That is also why callers use `@main`
-for this workflow and no other: the rule pins the ref, and the ruleset vouches for what is on it.
+`main` is the one ref that only changes through a pull request. Its ruleset requires a pull request
+(squash only) and allows no force-push, no deletion and no bypass. It requires **no approving
+review and no status checks**, so anyone who can write to this repo can merge their own change. The
+rule pins the ref; it does not make what is on it reviewed.
+
+Because callers use `@main`, a change merged here reaches every caller at its next PR run. The
+other workflows in this repo reach a caller only when that caller merges its Renovate digest bump;
+this one has no such second look.
 
 ⚠️ **The subject is in GitHub's id form, not `repo:brandtstack/…`.** For a PR run the `sub` claim
 looks like `repo:brandtstack@316569120/<repo>@<repo id>:pull_request` (owner and repo each
