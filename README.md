@@ -15,6 +15,7 @@ actually read.
 | `node-ci.yml` | verify · optional Postgres integration · build + smoke + publish image |
 | `go-ci.yml` | same shape for Go services (no in-container smoke — distroless has no shell) |
 | `pr-title.yml` | conventional-commit check on the PR title |
+| `pr-review.yml` | one advisory Claude review comment per PR, authenticated by workload identity federation (no API key) |
 | `release.yml` | on merge to main: mint `vX.Y.Z`, promote the tested image, push the tag |
 
 ## Inputs
@@ -64,6 +65,25 @@ Runs `make verify` (and `make verify-integration` when `needs-postgres`) instead
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
 | `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
+
+### `pr-review.yml` (6)
+
+| Input | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
+| `model` | string | `'claude-sonnet-5-5'` | Model for the Messages call. Only `claude-sonnet-5-5` and `claude-haiku-5-5`; anything else logs a line and uses the default |
+| `max-tokens` | number | `4096` | `max_tokens` for the review, at most `8192`; a cut-off review says so in the comment |
+| `max-diff-bytes` | number | `153600` | Cap on the diff after lockfiles and generated files are left out, at most `307200`. Over it, the comment says "not reviewed" and no API call is made |
+| `review-drafts` | boolean | `false` | Also review draft PRs |
+| `review-renovate` | boolean | `false` | Also review PRs opened by `renovate[bot]` |
+
+The bounds are enforced inside the workflow, because the caller is whatever a PR's branch says. A
+value over its cap logs a line and uses the cap; a value that is not a number uses the default.
+
+No secrets. The token exchange reads four **org-level Actions variables**, which are identifiers, not
+credentials: `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`,
+`ANTHROPIC_SERVICE_ACCOUNT_ID`, and `ANTHROPIC_WORKSPACE_ID` (sent only when set). See
+*Automatic PR review*.
 
 ### `release.yml` (3 inputs, 3 secrets)
 
@@ -116,7 +136,8 @@ jobs:
 ```
 
 Pin `@main` to a commit SHA in real repos — Renovate keeps it current via
-`helpers:pinGitHubActionDigests`.
+`helpers:pinGitHubActionDigests`. The one exception is `pr-review.yml`, which stays on `@main`
+(see *Automatic PR review*).
 
 `renovate.json`:
 
@@ -124,6 +145,125 @@ Pin `@main` to a commit SHA in real repos — Renovate keeps it current via
 { "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>brandtstack/workspace-ci"] }
 ```
+
+### Automatic PR review
+
+In its own file, `.github/workflows/pr-review.yml`:
+
+```yaml
+name: pr-review
+on:
+  pull_request:
+    branches: [main]
+    # ready_for_review: a draft marked ready is reviewed then, not at its next push.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request'
+    uses: brandtstack/workspace-ci/.github/workflows/pr-review.yml@main
+    permissions: { contents: read, pull-requests: write, id-token: write }
+    with:
+      runner: '["self-hosted","priv-ci"]'
+```
+
+⚠️ **This one call stays on `@main`, not a SHA**, unlike every other `uses:` above. The federation
+rule hands out a token only to `pr-review.yml` at `refs/heads/main` (see *The federation rule*). A
+caller pinned to a SHA gets an opaque `401` and no review. The shared Renovate preset leaves this
+file's `workspace-ci` ref alone for that reason; it matches on the file path.
+
+**Migrating an existing caller:** on the `pr-review.yml` call, replace a pinned `@<sha> # main`
+with `@main` by hand, and move the call to `.github/workflows/pr-review.yml` if it lives anywhere
+else. Renovate never undoes a pin, and in any other file it would pin `@main` again.
+
+The job asks GitHub for an OIDC token (audience `https://api.anthropic.com`), exchanges it at
+`/v1/oauth/token` for an access token that lives about ten minutes, and makes one `/v1/messages`
+call with **no tools**. The OIDC token and the access token are masked the moment they exist, and
+no credential is ever a command-line argument: headers and bodies go to `curl` by file. The answer
+is posted as one PR comment by `github-actions[bot]` that starts with `<!-- pr-review -->`; later
+pushes edit that comment. A comment by anyone else, even one quoting the marker, is never touched.
+
+**What the model sees:** the PR title and the diff, minus generated files (`*.min.js`, `*.map`,
+`*_generated.go`, and `dist/`, `build/`, `vendor/`, `coverage/` at the repo root) and the lockfiles
+listed next. The diff sits between tags with a random name per run, so a diff cannot close them.
+The left-out files are listed at the bottom of the comment (the first 50, then "and N more").
+
+**Lockfiles:** `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` and `pnpm-lock.yaml` are
+scanned instead of sent. On each added line the scan reads these keys, quoted with `"` or `'` or
+not:
+
+- `resolved` (npm, Yarn 1) and `tarball` (pnpm);
+- `resolution` (Yarn Berry, `"name@source"`; `name@npm:<version>` is the registry and passes);
+- `repo` and `directory` inside a pnpm `resolution: {…}` map (a git or local source; always
+  flagged).
+
+A value that does not start with `https://registry.npmjs.org/` (or `https://npm.pkg.github.com/`
+for `@brandtstack`) puts a warning in the comment, whatever its scheme (`git+ssh:`, `github:`,
+`file:`, scp-style). So does an npm workspace link (`"resolved": "packages/x"`), and any added line
+with a JSON `\u` escape. A bare version or a single word under `resolved`, `tarball` or
+`resolution` is not a source and is not flagged. Anything outside those keys is not checked.
+`go.sum` (hashes only) and the binary `bun.lockb` are left out unscanned. Every other lockfile
+(`Cargo.lock`, `uv.lock`, `poetry.lock`, `bun.lock`, `composer.lock`, `Gemfile.lock`) goes to the
+model like source, and counts toward `max-diff-bytes`. Paths git quotes (tabs, non-ASCII) keep
+their quotes.
+
+**It never fails the PR once it runs:** a skip, missing variables, an unreadable diff, a denied
+exchange (the API answers an opaque `401`) or an API error writes a warning to the log and the job
+summary and exits 0. After an earlier review, a failure leaves that review up with a "Not
+re-reviewed at `<sha>`" line on top; a push that leaves only lockfiles or generated files replaces
+it with "nothing to review". The job times out after 10 minutes, and every `curl` and `gh` call has
+its own limit. Never make it a required check.
+
+⚠️ **A missing permission is a hard failure.** A caller that grants less than
+`pull-requests: write` and `id-token: write` fails at workflow startup, before the job runs, and
+that does show as a failed check.
+
+The diff is untrusted input; the worst a hostile diff can do is a misleading comment. The model's
+text is posted as is, except that every `@name` gets a zero-width space after the `@`, and the
+HTML entities for `@` (`&#64;`, `&#x40;`, `&commat;`, any case) are turned into the same, so a
+comment can never mention a person or a team. That includes code spans, so `@types/node` carries an
+invisible character there too.
+
+#### The federation rule
+
+The rule that lets a run mint a token lives in the Claude Console, not here, and **it is the only
+thing that decides which runs get a token**. The org `vars.ANTHROPIC_*` ids are not secret. Under
+`pull_request` a PR's own copy of its workflows runs, so any workflow in any matching repo can ask
+GitHub for an OIDC token with the `https://api.anthropic.com` audience, and so can a caller that
+points at `pr-review.yml` on some other branch of this repo. Scope the rule to this workflow **as
+merged to `main`**:
+
+| Claim | Value |
+| --- | --- |
+| subject | `repo:brandtstack@316569120/*` |
+| `repository_owner` | `brandtstack` |
+| `repository_owner_id` | `316569120` |
+| `repository_visibility` | `private` |
+| `event_name` | `pull_request` |
+| CEL | `claims.job_workflow_ref == "brandtstack/workspace-ci/.github/workflows/pr-review.yml@refs/heads/main"` |
+
+Scope: `workspace:developer`, token lifetime 10 minutes. **Required:** a dedicated workspace with
+a spend limit. The limit is what bounds a token that reaches the wrong code.
+
+**Why an exact match on `main`.** A prefix such as `…/pr-review.yml@` accepts the file at any ref:
+an unmerged branch of this public repo could carry a `pr-review.yml` that sends the token anywhere.
+`main` is the one ref that only changes through a pull request. Its ruleset requires a pull request
+(squash only) and allows no force-push, no deletion and no bypass. It requires **no approving
+review and no status checks**, so anyone who can write to this repo can merge their own change. The
+rule pins the ref; it does not make what is on it reviewed.
+
+Because callers use `@main`, a change merged here reaches every caller at its next PR run. The
+other workflows in this repo reach a caller only when that caller merges its Renovate digest bump;
+this one has no such second look.
+
+⚠️ **The subject is in GitHub's id form, not `repo:brandtstack/…`.** For a PR run the `sub` claim
+looks like `repo:brandtstack@316569120/<repo>@<repo id>:pull_request` (owner and repo each
+followed by `@<numeric id>`). A subject of `repo:brandtstack/*` never matches: the exchange fails
+with `match_subject_prefix`, which the job only sees as an opaque `401`.
+
+Tests: `python3 tests/pr-review/test_pr_review.py` (fake `gh`, stub API on `127.0.0.1`, `curl`
+and `jq` wrapped to catch a credential in argv; nothing leaves the machine). `tests.yml` runs them
+on every PR, on GitHub-hosted runners only.
 
 ### A non-default Dockerfile
 
@@ -143,7 +283,7 @@ last app Coolify still built from source.
 
 ### Running on the self-hosted runner (private repos only)
 
-All four workflows take a **`runner:`** input — JSON for `runs-on`, default `'"ubuntu-latest"'`
+All five workflows take a **`runner:`** input — JSON for `runs-on`, default `'"ubuntu-latest"'`
 (GitHub-hosted). Private brandtstack repos opt in to the one-job, Sysbox-isolated runners on the Acer
 by passing it to **every** job, `release` included:
 
