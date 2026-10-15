@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """A stand-in for the four `gh` calls pr-review.yml makes. State lives in the JSON file $FAKE_GH_STATE:
-{"diff": str, "diff_fails": bool, "comments": [{"id": int, "body": str}], "calls": [[argv...]]}
+{"diff": str, "diff_fails": bool, "comments": [{"id": int, "user": {"login": str}, "body": str}],
+ "patch_fails": bool, "calls": [[argv...]]}
+Comment lists are served the way `gh api --paginate` prints them: one JSON array per page, two
+comments per page, so the workflow has to merge the pages.
 """
 import json
 import os
-import subprocess
 import sys
 
+BOT = {"login": "github-actions[bot]"}
 path = os.environ["FAKE_GH_STATE"]
 with open(path) as f:
     state = json.load(f)
@@ -32,21 +35,23 @@ if argv[:2] == ["pr", "diff"]:
 elif argv[:2] == ["pr", "comment"]:
     with open(arg("--body-file")) as f:
         body = f.read()
-    state["comments"].append({"id": 1000 + len(state["comments"]), "body": body})
+    state["comments"].append({"id": 1000 + len(state["comments"]), "user": BOT, "body": body})
     save()
 elif argv[0] == "api" and "PATCH" in argv:
     cid = int([a for a in argv if a.startswith("repos/")][0].rsplit("/", 1)[1])
     body = json.load(sys.stdin)["body"]
-    for c in state["comments"]:
-        if c["id"] == cid:
-            c["body"] = body
+    save()
+    target = [c for c in state["comments"] if c["id"] == cid]
+    if not target or target[0]["user"] != BOT or state.get("patch_fails"):
+        sys.stderr.write("HTTP 403: Resource not accessible by integration\n")
+        sys.exit(1)
+    target[0]["body"] = body
     save()
 elif argv[0] == "api" and "--paginate" in argv:
     save()
-    r = subprocess.run(["jq", "-r", arg("--jq")], input=json.dumps(state["comments"]),
-                       capture_output=True, text=True)
-    sys.stdout.write(r.stdout)
-    sys.exit(r.returncode)
+    c = state["comments"]
+    pages = [c[i:i + 2] for i in range(0, len(c), 2)] or [[]]
+    sys.stdout.write("".join(json.dumps(p) for p in pages))
 else:
     save()
     sys.stderr.write("fake gh: unexpected call %r\n" % argv)

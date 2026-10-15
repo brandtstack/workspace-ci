@@ -3,13 +3,16 @@
 
 Runs the workflow's own `run:` block, read from the YAML, under `bash -eo pipefail` like the runner,
 against a fake `gh` and a stub server on 127.0.0.1 that plays GitHub's OIDC endpoint and the
-Anthropic token exchange and Messages API. Nothing leaves the machine.
+Anthropic token exchange and Messages API. The one hardcoded API URL is rewritten to the stub when
+the block is extracted. `curl` and `jq` are wrapped to record their argv, so a credential passed as
+an argument is caught. Nothing leaves the machine.
 
 Run: python3 tests/pr-review/test_pr_review.py     (needs python3 with PyYAML, bash, curl, jq, awk)
 """
 import http.server
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,25 +22,45 @@ import threading
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "pr-review.yml")
+ROOT = os.path.join(HERE, "..", "..")
+WORKFLOW = os.path.join(ROOT, ".github", "workflows", "pr-review.yml")
+TESTS_WORKFLOW = os.path.join(ROOT, ".github", "workflows", "tests.yml")
 FAKE_GH = os.path.join(HERE, "fake_gh.py")
+API_LINE = "API='https://api.anthropic.com'"
+REAL = {n: shutil.which(n) for n in ("curl", "jq")}
 # Built at runtime so no token-shaped literal sits in this public repo.
 TOKEN = "sk-ant-" + "oat01-" + "fixture-access-token"
 JWT = "eyJ" + "fixture.oidc.jwt"
 OIDC_BEARER = "fixture-request-token"
+SECRETS = (TOKEN, JWT, OIDC_BEARER)
 MARKER = "<!-- pr-review -->"
+BOT = {"login": "github-actions[bot]"}
+HUMAN = {"login": "someone"}
 
 
 def file_diff(path, body="+x\n"):
     return "diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n@@ -0,0 +1 @@\n%s" % (path, path, path, path, body)
 
 
+def new_file(path, body="+x\n"):
+    return "diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1 @@\n%s" % (path, path, path, body)
+
+
+def deleted_file(path):
+    return "diff --git a/%s b/%s\ndeleted file mode 100644\n--- a/%s\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n" % (path, path, path)
+
+
+def binary_file(path):
+    return "diff --git a/%s b/%s\nindex 1..2 100644\nBinary files a/%s and b/%s differ\n" % (path, path, path, path)
+
+
 DIFF = (file_diff("src/app.ts", "+export const a = 1;\n")
         + file_diff("package-lock.json", "+lockfile-content\n")
         + file_diff("go.sum", "+gosum-content\n")
-        + file_diff("web/dist/bundle.js", "+bundle-content\n")
+        + file_diff("dist/bundle.js", "+bundle-content\n")
         + file_diff("api/types_generated.go", "+generated-content\n")
         + file_diff("lib/util.go", "+func util() {}\n"))
+LEFT_OUT = ("package-lock.json", "go.sum", "dist/bundle.js", "api/types_generated.go")
 
 
 class Stub(http.server.BaseHTTPRequestHandler):
@@ -82,32 +105,48 @@ class Stub(http.server.BaseHTTPRequestHandler):
         self.reply(404, {})
 
 
-def script():
+def workflow():
     with open(WORKFLOW) as f:
-        return yaml.safe_load(f)["jobs"]["review"]["steps"][0]["run"]
+        return yaml.safe_load(f)
+
+
+def script(api_base):
+    run = workflow()["jobs"]["review"]["steps"][0]["run"]
+    assert run.count(API_LINE) == 1, "the API URL must be one hardcoded line"
+    return run.replace(API_LINE, "API='%s'" % api_base)
+
+
+SHIM = """#!/usr/bin/env bash
+printf '%%s\\0' "$@" >> "$ARGV_LOG"; printf '\\n' >> "$ARGV_LOG"
+exec %s "$@"
+"""
 
 
 class Run:
-    def __init__(self, port, base, *, diff=DIFF, comments=None, env=None, mode=None, api_port=None):
+    def __init__(self, port, base, *, diff=DIFF, comments=None, env=None, mode=None, api_port=None, gh=None):
         Stub.mode, Stub.seen[:] = dict(mode or {}), []
         self.base = base
         self.state_path = os.path.join(base, "gh-state.json")
         with open(self.state_path, "w") as f:
-            json.dump({"diff": diff, "diff_fails": (env or {}).pop("_diff_fails", False),
-                       "comments": comments or [], "calls": []}, f)
+            json.dump(dict({"diff": diff, "comments": comments or [], "calls": []}, **(gh or {})), f)
         bindir = os.path.join(base, "bin")
         os.makedirs(bindir, exist_ok=True)
         shutil.copy(FAKE_GH, os.path.join(bindir, "gh"))
         os.chmod(os.path.join(bindir, "gh"), 0o755)
+        for name, real in REAL.items():
+            with open(os.path.join(bindir, name), "w") as f:
+                f.write(SHIM % real)
+            os.chmod(os.path.join(bindir, name), 0o755)
+        self.argv_log = os.path.join(base, "argv.log")
+        open(self.argv_log, "w").close()
         self.runner_temp = os.path.join(base, "runner-temp")
         os.makedirs(self.runner_temp, exist_ok=True)
         self.summary = os.path.join(base, "summary.md")
         open(self.summary, "w").close()
         e = {
-            "PATH": bindir + os.pathsep + os.environ["PATH"], "HOME": base,
+            "PATH": bindir + os.pathsep + os.environ["PATH"], "HOME": base, "ARGV_LOG": self.argv_log,
             "FAKE_GH_STATE": self.state_path, "RUNNER_TEMP": self.runner_temp,
             "GITHUB_STEP_SUMMARY": self.summary,
-            "PR_REVIEW_API_BASE": "http://127.0.0.1:%d" % (api_port or port),
             "ACTIONS_ID_TOKEN_REQUEST_URL": "http://127.0.0.1:%d/oidc?api-version=2.0" % port,
             "ACTIONS_ID_TOKEN_REQUEST_TOKEN": OIDC_BEARER,
             "GH_TOKEN": "fixture-gh-token", "REPO": "acme/thing", "PR": "7",
@@ -120,7 +159,7 @@ class Run:
         e.update(env or {})
         path = os.path.join(base, "step.sh")
         with open(path, "w") as f:
-            f.write(script())
+            f.write(script("http://127.0.0.1:%d" % (api_port or port)))
         r = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", path],
                            env=e, capture_output=True, text=True, cwd=base, timeout=60)
         self.code, self.out, self.err = r.returncode, r.stdout, r.stderr
@@ -128,23 +167,35 @@ class Run:
             self.gh = json.load(f)
         with open(self.summary) as f:
             self.summary_text = f.read()
+        with open(self.argv_log) as f:
+            self.argvs = f.read()
         self.seen = list(Stub.seen)
 
     def posts(self, path):
         return [s for s in self.seen if s[0] == "POST" and s[1] == path]
 
+    def body(self, i=-1):
+        return self.gh["comments"][i]["body"] if self.gh["comments"] else ""
+
+    def prompt(self):
+        req = self.posts("/v1/messages")
+        return req[0][3]["messages"][0]["content"] if req else ""
+
     def leaks(self):
-        """Places the access token or the OIDC JWT shows up, other than the add-mask lines."""
+        """Places a credential shows up: logs other than add-mask lines, comments, and argv."""
         found = []
         for where, text in (("stdout", self.out), ("stderr", self.err), ("summary", self.summary_text)):
             for line in text.splitlines():
                 if line.startswith("::add-mask::"):
                     continue
-                if TOKEN in line or JWT in line or "sk-ant-oat01" in line:
+                if any(s in line for s in SECRETS) or "sk-ant-oat01" in line:
                     found.append(where)
         for c in self.gh["comments"]:
             if "sk-ant-oat01" in c["body"] or JWT in c["body"]:
                 found.append("comment")
+        for s in SECRETS:
+            if s in self.argvs:
+                found.append("argv:" + s[:6])
         return found
 
     def masked_first(self):
@@ -169,15 +220,35 @@ def rows(port, dead_port, tmp):
     def add(name, ok, detail=""):
         checks.append((name, bool(ok), detail))
 
+    # Static: the shape reviewers asked for.
+    wf = workflow()
+    run = wf["jobs"]["review"]["steps"][0]["run"]
+    add("static: job timeout-minutes 10", wf["jobs"]["review"].get("timeout-minutes") == 10)
+    curls = [l for l in run.splitlines() if re.search(r"(^|[\s(\"])curl ", l)]
+    add("static: every curl has --max-time", curls and all("--max-time" in l for l in curls), "\n".join(curls))
+    add("static: no API override hook", "PR_REVIEW_API_BASE" not in run and run.count(API_LINE) == 1)
+    add("static: every gh call has a timeout", all("timeout " in l for l in run.splitlines()
+                                                     if re.search(r"(^|\|\s*)\s*gh ", l)))
+    with open(TESTS_WORKFLOW) as f:
+        tw = yaml.safe_load(f)
+    jobs = tw["jobs"].values()
+    add("static: tests job runs GitHub-hosted, never the Acer",
+        all(j.get("runs-on") == "ubuntu-latest" for j in jobs), json.dumps([j.get("runs-on") for j in jobs]))
+    tests_run = "\n".join(s.get("run", "") for j in jobs for s in j["steps"])
+    add("static: tests job pins PyYAML exactly", re.search(r"PyYAML==\d+\.\d+\.\d+", tests_run))
+    add("static: tests job uses sha-pinned actions only",
+        all(re.search(r"@[0-9a-f]{40}", s["uses"]) for j in jobs for s in j["steps"] if "uses" in s))
+
     # Happy path: first review posts one comment.
     r = Run(port, fresh())
     req = r.posts("/v1/messages")
     sent = req[0][3] if req else {}
-    prompt = sent.get("messages", [{}])[0].get("content", "")
+    prompt = r.prompt()
     add("happy: exit 0", r.code == 0, r.err)
-    add("happy: one comment posted with the marker", len(r.gh["comments"]) == 1 and r.gh["comments"][0]["body"].startswith(MARKER))
-    add("happy: comment carries the model text", "**Verdict:** no findings." in r.gh["comments"][0]["body"] if r.gh["comments"] else False)
-    add("happy: comment carries usage", "1234 in / 56 out" in (r.gh["comments"][0]["body"] if r.gh["comments"] else ""))
+    add("happy: one comment posted with the marker", len(r.gh["comments"]) == 1 and r.body().startswith(MARKER))
+    add("happy: comment carries the model text", "**Verdict:** no findings." in r.body())
+    add("happy: comment carries usage", "1234 in / 56 out" in r.body())
+    add("happy: comment lists the left-out files", all("- `%s`" % p in r.body() for p in LEFT_OUT), r.body())
     add("happy: usage logged", 'pr-review: usage {"input_tokens":1234,"output_tokens":56}' in r.out, r.out)
     add("happy: OIDC asked for the anthropic audience", any("audience=https://api.anthropic.com" in s[1] for s in r.seen if s[0] == "GET"))
     ex = r.posts("/v1/oauth/token")
@@ -196,47 +267,106 @@ def rows(port, dead_port, tmp):
         add("diff filter: %s left out" % what, word not in prompt)
     add("diff filter: count logged", "4 files left out" in r.out, r.out)
     add("token: add-mask comes before any other appearance", r.masked_first(), r.out)
-    add("token: in no log, summary or comment", not r.leaks(), str(r.leaks()))
+    add("token: JWT masked", "::add-mask::" + JWT in r.out)
+    add("credentials: in no log, summary, comment or argv", not r.leaks(), str(r.leaks()))
+    add("credentials: argv log is live (shims ran)", "oauth/token" in r.argvs and "--rawfile" in r.argvs)
     add("token: RUNNER_TEMP cleaned up", r.temp_clean(), str(os.listdir(r.runner_temp)))
+
+    # Path filter anchoring, odd paths.
+    d = (file_diff("src/build/auth.ts", "+nested-build\n") + file_diff("build/out.js", "+root-build\n")
+         + file_diff("pkg/vendor/x.go", "+nested-vendor\n") + file_diff("vendor/y.go", "+root-vendor\n")
+         + file_diff("app/coverage/c.ts", "+nested-coverage\n") + file_diff("coverage/lcov.info", "+root-coverage\n")
+         + file_diff("web/node_modules/m/i.js", "+nm-content\n")
+         + file_diff("docs/my file.md", "+spaced-content\n") + file_diff("dist/a b.js", "+spaced-dist\n")
+         + new_file("src/new.ts", "+new-content\n") + deleted_file("dist/old.js")
+         + binary_file("assets/logo.png") + binary_file("dist/img.png"))
+    r = Run(port, fresh(), diff=d)
+    p = r.prompt()
+    for word in ("nested-build", "nested-vendor", "nested-coverage", "spaced-content", "new-content", "assets/logo.png"):
+        add("anchored filter: %s kept" % word, word in p)
+    for word in ("root-build", "root-vendor", "root-coverage", "nm-content", "spaced-dist", "dist/old.js", "dist/img.png"):
+        add("anchored filter: %s left out" % word, word not in p)
+    add("paths with spaces: listed whole", "- `dist/a b.js`" in r.body(), r.body())
+    add("deleted and binary files: listed by path", "- `dist/old.js`" in r.body() and "- `dist/img.png`" in r.body())
+
+    # Lockfile hosts.
+    def lock(lines):
+        return file_diff("src/a.ts") + file_diff("package-lock.json", "".join("+%s\n" % l for l in lines))
+    r = Run(port, fresh(), diff=lock(['"resolved": "https://registry.npmjs.org/a/-/a-1.0.0.tgz",',
+                                      '"resolved": "https://npm.pkg.github.com/download/@brandtstack/x/1.0.0/abc",']))
+    add("lockfile: npmjs and @brandtstack on GitHub Packages pass", "WARNING" not in r.body() and "unexpected host" not in r.out, r.body())
+    r = Run(port, fresh(), diff=lock(['"resolved": "https://repo.example.internal/npm/a/-/a-1.0.0.tgz",']))
+    add("lockfile: another host warned in the comment", "[!WARNING]" in r.body() and "repo.example.internal" in r.body(), r.body())
+    add("lockfile: another host warned in the log", "::warning::pr-review: a lockfile resolves from an unexpected host" in r.out)
+    add("lockfile: still kept out of the prompt", "repo.example.internal" not in r.prompt())
+    r = Run(port, fresh(), diff=lock(['"resolved": "https://npm.pkg.github.com/download/@other/x/1.0.0/abc",']))
+    add("lockfile: GitHub Packages outside @brandtstack warned", "npm.pkg.github.com" in r.body() and "[!WARNING]" in r.body())
+    r = Run(port, fresh(), diff=file_diff("src/a.ts")
+            + file_diff("package-lock.json", '-  "resolved": "https://repo.example.internal/old.tgz",\n'))
+    add("lockfile: removed lines not warned", "[!WARNING]" not in r.body())
 
     # Workspace id is sent when set.
     r = Run(port, fresh(), env={"WORKSPACE_ID": "ws-fixture"})
     ex = r.posts("/v1/oauth/token")
     add("exchange: workspace id sent when set", ex and ex[0][3].get("workspace_id") == "ws-fixture")
 
-    # Upsert: an existing marker comment is edited, others are left alone.
-    others = [{"id": 1, "body": "a human comment"}, {"id": 2, "body": MARKER + "\nold review"}]
-    r = Run(port, fresh(), comments=others, mode={"text": "**Verdict:** 1 finding(s)"})
+    # Upsert: only the bot's own marker comment, the last one, across pages.
+    cs = [{"id": 1, "user": HUMAN, "body": "a human comment"},
+          {"id": 2, "user": BOT, "body": MARKER + "\nold review"}]
+    r = Run(port, fresh(), comments=cs, mode={"text": "**Verdict:** 1 finding(s)"})
     bodies = {c["id"]: c["body"] for c in r.gh["comments"]}
     add("upsert: still two comments", len(r.gh["comments"]) == 2, json.dumps(r.gh["comments"]))
-    add("upsert: marker comment edited in place", "1 finding(s)" in bodies.get(2, "") and "old review" not in bodies.get(2, ""))
+    add("upsert: bot marker comment edited in place", "1 finding(s)" in bodies.get(2, "") and "old review" not in bodies.get(2, ""))
     add("upsert: other comment untouched", bodies.get(1) == "a human comment")
     add("upsert: no new comment call", not any(c[:2] == ["pr", "comment"] for c in r.gh["calls"]))
-    add("upsert: logs the update", "updated comment 2" in r.out, r.out)
+    cs = [{"id": 1, "user": HUMAN, "body": MARKER + "\nquoted by a human"},
+          {"id": 2, "user": {"login": "other-bot[bot]"}, "body": MARKER + "\nforeign bot"},
+          {"id": 3, "user": BOT, "body": "a bot comment that mentions " + MARKER}]
+    r = Run(port, fresh(), comments=cs)
+    bodies = {c["id"]: c["body"] for c in r.gh["comments"]}
+    add("upsert: human comment with the marker untouched", bodies.get(1) == MARKER + "\nquoted by a human")
+    add("upsert: foreign author with the marker untouched", bodies.get(2) == MARKER + "\nforeign bot")
+    add("upsert: bot comment not starting with the marker untouched", bodies.get(3, "").startswith("a bot comment"))
+    add("upsert: so a new comment is posted", len(r.gh["comments"]) == 4 and "no findings" in r.body())
+    cs = [{"id": 1, "user": HUMAN, "body": "x"}, {"id": 2, "user": HUMAN, "body": "y"},
+          {"id": 3, "user": BOT, "body": MARKER + "\nfirst"}, {"id": 4, "user": HUMAN, "body": "z"},
+          {"id": 5, "user": BOT, "body": MARKER + "\nsecond"}]
+    r = Run(port, fresh(), comments=cs)
+    bodies = {c["id"]: c["body"] for c in r.gh["comments"]}
+    add("upsert: two bot marker comments across pages, the last is edited",
+        "no findings" in bodies.get(5, "") and bodies.get(3) == MARKER + "\nfirst" and len(bodies) == 5, json.dumps(bodies))
 
     # Model text with shell metacharacters lands literally, nothing runs.
     canary = os.path.join(tmp, "canary")
     evil = "$(touch %s) `touch %s` ${HOME} \"'; touch %s" % (canary, canary, canary)
     r = Run(port, fresh(), mode={"text": evil}, env={"TITLE": "fix: $(touch %s)" % canary})
-    add("body: shell text posted literally", r.gh["comments"] and evil in r.gh["comments"][0]["body"])
+    add("body: shell text posted literally", evil in r.body())
     add("body: nothing in model text or title executed", not os.path.exists(canary))
 
     # Cut off at max_tokens.
     r = Run(port, fresh(), mode={"stop_reason": "max_tokens"})
-    add("max_tokens: cut-off noted", "Cut off at max-tokens (4096)" in r.gh["comments"][0]["body"] if r.gh["comments"] else False)
+    add("max_tokens: cut-off noted", "Cut off at max-tokens (4096)" in r.body())
 
     # Size cap: over the cap, a short comment, no exchange.
     big = file_diff("src/big.ts", "+" + "y" * 2000 + "\n")
     r = Run(port, fresh(), diff=big, env={"MAX_DIFF_BYTES": "1000"})
     add("cap: exit 0", r.code == 0, r.err)
-    add("cap: 'not reviewed' comment with the marker",
-        len(r.gh["comments"]) == 1 and r.gh["comments"][0]["body"].startswith(MARKER) and "not reviewed" in r.gh["comments"][0]["body"])
+    add("cap: 'not reviewed at sha' comment with the marker",
+        len(r.gh["comments"]) == 1 and r.body().startswith(MARKER) and "not reviewed at `0123456`" in r.body(), r.body())
     add("cap: no OIDC, no exchange, no messages", not r.seen)
     add("cap: warning", "::warning::pr-review: diff too large" in r.out, r.out)
-    r = Run(port, fresh(), diff=big, env={"MAX_DIFF_BYTES": "1000"}, comments=[{"id": 5, "body": MARKER + "\nold"}])
-    add("cap: replaces an earlier review", len(r.gh["comments"]) == 1 and "not reviewed" in r.gh["comments"][0]["body"])
+    r = Run(port, fresh(), diff=big, env={"MAX_DIFF_BYTES": "1000"}, comments=[{"id": 5, "user": BOT, "body": MARKER + "\nold"}])
+    add("cap: replaces an earlier review", len(r.gh["comments"]) == 1 and "not reviewed" in r.body())
     add("cap: lockfile bytes do not count", Run(port, fresh(), diff=DIFF + file_diff("package-lock.json", "+" + "z" * 5000 + "\n"),
                                                 env={"MAX_DIFF_BYTES": "1000"}).posts("/v1/messages"))
+
+    # Nothing left after the filter: an earlier review is replaced, not left stale.
+    only_locks = file_diff("package-lock.json") + file_diff("go.sum")
+    r = Run(port, fresh(), diff=only_locks, comments=[{"id": 5, "user": BOT, "body": MARKER + "\n**Verdict:** 3 finding(s)"}])
+    add("empty diff: exit 0, nothing sent", r.code == 0 and "nothing left to review" in r.out and not r.seen)
+    add("empty diff: earlier review replaced by 'nothing to review at sha'",
+        len(r.gh["comments"]) == 1 and "nothing to review at `0123456`" in r.body() and "3 finding" not in r.body(), r.body())
+    add("empty diff: left-out files listed", "- `go.sum`" in r.body())
 
     # Exchange denied: exit 0, warning and summary, no messages call, no comment.
     r = Run(port, fresh(), mode={"exchange": 401})
@@ -244,8 +374,22 @@ def rows(port, dead_port, tmp):
     add("401 exchange: warning names the HTTP code", "::warning::pr-review: token exchange failed (HTTP 401)" in r.out, r.out)
     add("401 exchange: job summary written", "token exchange failed (HTTP 401)" in r.summary_text)
     add("401 exchange: no messages call, no comment", not r.posts("/v1/messages") and not r.gh["comments"])
-    add("401 exchange: no token or JWT in output", not r.leaks(), str(r.leaks()))
+    add("401 exchange: no credential in output or argv", not r.leaks(), str(r.leaks()))
     add("401 exchange: RUNNER_TEMP cleaned up", r.temp_clean())
+
+    # A failure after an earlier review marks it stale, once.
+    old = MARKER + "\n## Claude review\n\n**Verdict:** 2 finding(s)\n"
+    r = Run(port, fresh(), mode={"exchange": 401}, comments=[{"id": 5, "user": BOT, "body": old}])
+    add("stale: earlier review kept and marked 'not re-reviewed at sha'",
+        len(r.gh["comments"]) == 1 and r.body().startswith(MARKER + "\n> Not re-reviewed at `0123456`: token exchange failed")
+        and "2 finding(s)" in r.body(), r.body())
+    add("stale: still exit 0", r.code == 0)
+    again = Run(port, fresh(), mode={"messages": 529}, comments=[{"id": 5, "user": BOT, "body": r.body()}])
+    add("stale: a second failure replaces the note, does not stack it",
+        again.body().count("Not re-reviewed") == 1 and "HTTP 529" in again.body() and "2 finding(s)" in again.body()
+        and again.body().count(MARKER) == 1, again.body())
+    r = Run(port, fresh(), mode={"exchange": 401}, comments=[{"id": 5, "user": BOT, "body": old}], gh={"patch_fails": True})
+    add("stale: a failed edit still exits 0", r.code == 0 and "could not update comment 5" in r.out, r.out)
 
     # Exchange unreachable.
     r = Run(port, fresh(), api_port=dead_port)
@@ -256,7 +400,7 @@ def rows(port, dead_port, tmp):
     add("messages error: exit 0", r.code == 0, r.err)
     add("messages error: warning with code and type", "HTTP 529 (api_error)" in r.out, r.out)
     add("messages error: no comment", not r.gh["comments"])
-    add("messages error: no token in output", not r.leaks(), str(r.leaks()))
+    add("messages error: no credential in output or argv", not r.leaks(), str(r.leaks()))
 
     # Not configured: the pilot's first run.
     r = Run(port, fresh(), env={"FEDERATION_RULE_ID": "", "ORGANIZATION_ID": "", "SERVICE_ACCOUNT_ID": ""})
@@ -276,10 +420,8 @@ def rows(port, dead_port, tmp):
     r = Run(port, fresh(), env={"AUTHOR": "renovate[bot]", "REVIEW_RENOVATE": "true"})
     add("renovate with review-renovate: reviewed", len(r.gh["comments"]) == 1)
 
-    # Nothing left after the filter, and a diff that cannot be read.
-    r = Run(port, fresh(), diff=file_diff("package-lock.json") + file_diff("go.sum"))
-    add("only lockfiles: exit 0, nothing sent", r.code == 0 and "nothing left to review" in r.out and not r.seen)
-    r = Run(port, fresh(), env={"_diff_fails": True})
+    # A diff that cannot be read.
+    r = Run(port, fresh(), gh={"diff_fails": True})
     add("diff unreadable: exit 0 with the error", r.code == 0 and "could not read the diff: HTTP 406" in r.out, r.out)
     return checks
 

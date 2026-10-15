@@ -145,6 +145,13 @@ Pin `@main` to a commit SHA in real repos — Renovate keeps it current via
 ### Automatic PR review
 
 ```yaml
+on:
+  pull_request:
+    branches: [main]
+    # ready_for_review: a draft marked ready is reviewed then, not at its next push.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
   review:
     if: github.event_name == 'pull_request'
     uses: brandtstack/workspace-ci/.github/workflows/pr-review.yml@<sha> # main
@@ -154,21 +161,36 @@ Pin `@main` to a commit SHA in real repos — Renovate keeps it current via
 ```
 
 The job asks GitHub for an OIDC token (audience `https://api.anthropic.com`), exchanges it at
-`/v1/oauth/token` for an access token that lives about ten minutes, masks it before anything else
-touches it, and makes one `/v1/messages` call with **no tools**. The answer is posted as one PR
-comment marked `<!-- pr-review -->`; later pushes edit that comment. Lockfiles and generated files
-are left out of the diff. It is plain shell, `curl` and `jq`.
+`/v1/oauth/token` for an access token that lives about ten minutes, and makes one `/v1/messages`
+call with **no tools**. The OIDC token and the access token are masked the moment they exist, and
+no credential is ever a command-line argument: headers and bodies go to `curl` by file. The answer
+is posted as one PR comment by `github-actions[bot]` that starts with `<!-- pr-review -->`; later
+pushes edit that comment. A comment by anyone else, even one quoting the marker, is never touched.
 
-It **never fails the PR**: a skip, missing variables, a denied exchange (the API answers an opaque
-`401`) or an API error writes a warning to the log and the job summary and exits 0. Never make it
-a required check. The diff is untrusted input; the worst a hostile diff can do is a misleading
-comment.
+**What the model sees:** the diff, minus lockfiles and generated files (`*.min.js`, `*.map`,
+`*_generated.go`, and `dist/`, `build/`, `vendor/`, `coverage/` at the repo root). The left-out
+files are listed at the bottom of the comment. Lockfiles are scanned instead: an added `resolved` or
+`tarball` line pointing anywhere but `registry.npmjs.org` (or `npm.pkg.github.com` for
+`@brandtstack`) puts a warning in the comment. Paths git quotes (tabs, non-ASCII) keep their quotes.
 
-The federation rule that lets a run mint a token lives in the Claude Console, not here. Scope it to
-private repos of the org and to `pull_request` runs, so this public repo can never mint one.
+**It never fails the PR once it runs:** a skip, missing variables, a denied exchange (the API
+answers an opaque `401`) or an API error writes a warning to the log and the job summary and exits
+0. After an earlier review, a failure leaves that review up with a "Not re-reviewed at `<sha>`"
+line on top; a push that leaves only lockfiles or generated files replaces it with "nothing to
+review". The job times out after 10 minutes, and every `curl` and `gh` call has its own limit.
+Never make it a required check.
 
-Offline tests (fake `gh`, stub API on `127.0.0.1`, nothing leaves the machine):
-`python3 tests/pr-review/test_pr_review.py`.
+⚠️ **A missing permission is a hard failure.** A caller that grants less than
+`pull-requests: write` and `id-token: write` fails at workflow startup, before the job runs, and
+that does show as a failed check.
+
+The diff is untrusted input; the worst a hostile diff can do is a misleading comment. The federation
+rule that lets a run mint a token lives in the Claude Console, not here. Scope it to private repos of
+the org and to `pull_request` runs, so this public repo can never mint one.
+
+Tests: `python3 tests/pr-review/test_pr_review.py` (fake `gh`, stub API on `127.0.0.1`, `curl`
+and `jq` wrapped to catch a credential in argv; nothing leaves the machine). `tests.yml` runs them
+on every PR, on GitHub-hosted runners only.
 
 ### A non-default Dockerfile
 
