@@ -15,6 +15,7 @@ actually read.
 | `node-ci.yml` | verify · optional Postgres integration · build + smoke + publish image |
 | `go-ci.yml` | same shape for Go services (no in-container smoke — distroless has no shell) |
 | `pr-title.yml` | conventional-commit check on the PR title |
+| `pr-review.yml` | one advisory Claude review comment per PR, authenticated by workload identity federation (no API key) |
 | `release.yml` | on merge to main: mint `vX.Y.Z`, promote the tested image, push the tag |
 
 ## Inputs
@@ -64,6 +65,22 @@ Runs `make verify` (and `make verify-integration` when `needs-postgres`) instead
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
 | `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
+
+### `pr-review.yml` (6)
+
+| Input | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
+| `model` | string | `'claude-sonnet-5-5'` | Model for the Messages call |
+| `max-tokens` | number | `4096` | `max_tokens` for the review; a cut-off review says so in the comment |
+| `max-diff-bytes` | number | `153600` | Cap on the diff after lockfiles and generated files are left out. Over it, the comment says "not reviewed" and no API call is made |
+| `review-drafts` | boolean | `false` | Also review draft PRs |
+| `review-renovate` | boolean | `false` | Also review PRs opened by `renovate[bot]` |
+
+No secrets. The token exchange reads four **org-level Actions variables**, which are identifiers, not
+credentials: `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`,
+`ANTHROPIC_SERVICE_ACCOUNT_ID`, and `ANTHROPIC_WORKSPACE_ID` (sent only when set). See
+*Automatic PR review*.
 
 ### `release.yml` (3 inputs, 3 secrets)
 
@@ -125,6 +142,34 @@ Pin `@main` to a commit SHA in real repos — Renovate keeps it current via
   "extends": ["github>brandtstack/workspace-ci"] }
 ```
 
+### Automatic PR review
+
+```yaml
+  review:
+    if: github.event_name == 'pull_request'
+    uses: brandtstack/workspace-ci/.github/workflows/pr-review.yml@<sha> # main
+    permissions: { contents: read, pull-requests: write, id-token: write }
+    with:
+      runner: '["self-hosted","priv-ci"]'
+```
+
+The job asks GitHub for an OIDC token (audience `https://api.anthropic.com`), exchanges it at
+`/v1/oauth/token` for an access token that lives about ten minutes, masks it before anything else
+touches it, and makes one `/v1/messages` call with **no tools**. The answer is posted as one PR
+comment marked `<!-- pr-review -->`; later pushes edit that comment. Lockfiles and generated files
+are left out of the diff. It is plain shell, `curl` and `jq`.
+
+It **never fails the PR**: a skip, missing variables, a denied exchange (the API answers an opaque
+`401`) or an API error writes a warning to the log and the job summary and exits 0. Never make it
+a required check. The diff is untrusted input; the worst a hostile diff can do is a misleading
+comment.
+
+The federation rule that lets a run mint a token lives in the Claude Console, not here. Scope it to
+private repos of the org and to `pull_request` runs, so this public repo can never mint one.
+
+Offline tests (fake `gh`, stub API on `127.0.0.1`, nothing leaves the machine):
+`python3 tests/pr-review/test_pr_review.py`.
+
 ### A non-default Dockerfile
 
 `node-ci.yml` takes a **`dockerfile:`** input (path relative to the checkout root). Leave it unset
@@ -143,7 +188,7 @@ last app Coolify still built from source.
 
 ### Running on the self-hosted runner (private repos only)
 
-All four workflows take a **`runner:`** input — JSON for `runs-on`, default `'"ubuntu-latest"'`
+All five workflows take a **`runner:`** input — JSON for `runs-on`, default `'"ubuntu-latest"'`
 (GitHub-hosted). Private brandtstack repos opt in to the one-job, Sysbox-isolated runners on the Acer
 by passing it to **every** job, `release` included:
 
