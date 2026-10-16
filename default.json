@@ -7,6 +7,7 @@
   "schedule": ["before 6am on monday"],
   "labels": ["dependencies"],
   "prConcurrentLimit": 3,
+  "postUpdateOptions": ["npmInstallTwice"],
   "packageRules": [
     {
       "description": "Leave the pr-review.yml caller on @main. The Anthropic federation rule only accepts job_workflow_ref == brandtstack/workspace-ci/.github/workflows/pr-review.yml@refs/heads/main, and pinDigests would rewrite @main to @<sha> # main, which the rule then rejects (an opaque 401, no review). Scoped to the caller file the README prescribes, so node-ci, go-ci, pr-title and release stay pinned.",
