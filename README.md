@@ -373,13 +373,20 @@ first line says where that version stands:
 | --- | --- | --- |
 | `⏳ deploying` | tag minted, Coolify deploy queued | no |
 | `✅ live in production <UTC>` | Coolify reported the deployment `finished` and the app still points at this tag | **yes** |
-| `❌ deploy failed (<status>)` | `failed` / `cancelled-by-user` / `error`, or no terminal status within 10 min; the job fails | no |
-| `⏸ superseded by <tag>` | finished, but a newer merge had already moved the app on | no |
-| `❔ created on re-run; deploy state not checked` | a re-run found the tag but no Release | no |
+| `❌ deploy failed (<status>)` | Coolify ended `failed` / `cancelled-by-user` / `error`; the job fails | no |
+| `❌ deploy not started` | a Coolify step before the wait failed (set env, point, `/deploy`); the job fails | no |
+| `❔ deploy state unknown (timeout)` | no terminal status within 10 min; the job fails, and a re-run checks again | no |
+| `⏸ superseded by <tag>` | finished, but a newer merge had already moved the app on (or a stale re-run, below) | no |
 
 So the repo page's **Latest** badge is the version Coolify confirmed. A tag-only caller (no
 `coolify-app-uuid`) has nothing to wait for; its Release is Latest at once, with no state line.
 
+- **The Release step runs after `Deploy`**, so a GitHub API hiccup can never stop a deploy.
+- **A re-run converges.** Re-running an already-tagged commit runs the Coolify steps, the Release
+  and the wait again for that tag, so a failed deploy, a failed Release or a timeout is fixed by
+  "Re-run jobs". **Exception: a re-run whose tag is no longer the highest `v*` tag is stale.** It
+  never redeploys (that would roll production back); it only creates a missing Release, marked
+  `⏸ superseded by <highest>`.
 - Waiting holds the runner for the deploy's length (~70 s for a Next.js app, at most 10 min). The
   Acer runs 2 jobs at once, so each release holds one of the two slots while it waits.
 - ⚠️ `finished` is Coolify's word. Whether it implies the container's healthcheck passed is **not
