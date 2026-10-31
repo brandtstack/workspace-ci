@@ -62,25 +62,6 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # A re-run of a job whose "Create GitHub Release" step failed lands here: the tag exists, so
-      # every other step is skipped. Create the missing Release; the deploy state is unknown, so it
-      # is not marked Latest. Read the run that failed to learn whether the deploy landed.
-      - name: Ensure Release on re-run
-        if: steps.guard.outputs.skip == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag=$(git tag --points-at "$GITHUB_SHA" | grep '^v[0-9]' | head -n1)
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release ${tag} exists"
-          else
-            printf '%s\n' "❔ created on re-run; deploy state not checked" > "$RUNNER_TEMP/notes.md"
-            gh release create "$tag" --verify-tag --generate-notes --title "$tag" \
-              --latest=false --notes-file "$RUNNER_TEMP/notes.md"
-            echo "created missing Release ${tag}"
-          fi
-
       - name: Derive version from the squash commit title
         id: ver
         if: steps.guard.outputs.skip == 'false'
@@ -139,6 +120,29 @@ jobs:
           echo "base=${base} level=${level} new=${new}"
           echo "version=${new}" >> "$GITHUB_OUTPUT"
 
+      # Which version this run releases. A first run: the one just derived. A re-run of an
+      # already-tagged commit: that tag, so the Coolify, Release and wait steps run again and a
+      # re-run converges (redeploy + mark) instead of going green having done nothing. A re-run of
+      # an OLD run whose tag is no longer the highest is "stale": it must never redeploy, or
+      # re-running a days-old failure would roll production back.
+      - name: Resolve the version to release
+        id: v
+        env:
+          SKIP: ${{ steps.guard.outputs.skip }}
+          NEW:  ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$SKIP" = "true" ]; then
+            ver=$(git tag --points-at "$GITHUB_SHA" | grep '^v[0-9]' | sort -V | tail -n1)
+          else
+            ver="$NEW"
+          fi
+          highest=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
+          stale=false
+          if [ "$SKIP" = "true" ] && [ -n "$highest" ] && [ "$highest" != "$ver" ]; then stale=true; fi
+          echo "version=${ver} highest=${highest:-none} stale=${stale}"
+          { echo "version=${ver}"; echo "highest=${highest}"; echo "stale=${stale}"; } >> "$GITHUB_OUTPUT"
+
       - name: Resolve the PR head SHA this merge came from
         id: head
         if: steps.guard.outputs.skip == 'false' && inputs.publish-image
@@ -196,29 +200,6 @@ jobs:
           # workflows (GitHub loop prevention). Harmless today; Phase 2's
           # tag-triggered deploy will need a PAT or app token.
 
-      # The repo's "Latest" Release is the version running in production. An app Coolify deploys
-      # starts "⏳ deploying" and not Latest; "Wait for the deployment" below promotes it. A
-      # tag-only caller has nothing to wait for and is Latest at once. Notes are the PR titles since
-      # the previous v* tag (gh prepends --notes-file text to the generated notes).
-      - name: Create GitHub Release
-        if: steps.guard.outputs.skip == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VER:  ${{ steps.ver.outputs.version }}
-          WAIT: ${{ inputs.publish-image && inputs.coolify-app-uuid != '' }}
-        run: |
-          set -euo pipefail
-          if [ "$WAIT" = "true" ]; then
-            printf '%s\n' "⏳ deploying" > "$RUNNER_TEMP/notes.md"
-            latest="--latest=false"
-          else
-            : > "$RUNNER_TEMP/notes.md"
-            latest="--latest"
-          fi
-          gh release create "$VER" --verify-tag --generate-notes --title "$VER" \
-            "$latest" --notes-file "$RUNNER_TEMP/notes.md"
-          echo "created Release ${VER} (${latest})"
-
       # ---- Coolify: point the app at the version just promoted, then deploy ----
       # Guarded on coolify-app-uuid so repos that have not migrated are untouched.
       #
@@ -230,10 +211,10 @@ jobs:
       # Base URL is the public, Cloudflare-Access-gated endpoint: a GitHub-hosted
       # runner cannot reach kvm4's loopback :8000.
       - name: Set APP_VERSION on the Coolify application
-        if: steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != ''
+        if: steps.v.outputs.stale != 'true' && inputs.publish-image && inputs.coolify-app-uuid != ''
         env:
           UUID:   ${{ inputs.coolify-app-uuid }}
-          VER:    ${{ steps.ver.outputs.version }}
+          VER:    ${{ steps.v.outputs.version }}
           BEARER: ${{ secrets.COOLIFY_TOKEN }}
           CFID:   ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CFSEC:  ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
@@ -265,11 +246,11 @@ jobs:
           echo "APP_VERSION upsert -> ${code}"
           if [ "$code" != "200" ] && [ "$code" != "201" ]; then cat /tmp/env.json; exit 1; fi
 
-      - name: Point the Coolify application at ${{ steps.ver.outputs.version }}
-        if: steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != ''
+      - name: Point the Coolify application at ${{ steps.v.outputs.version }}
+        if: steps.v.outputs.stale != 'true' && inputs.publish-image && inputs.coolify-app-uuid != ''
         env:
           UUID:   ${{ inputs.coolify-app-uuid }}
-          VER:    ${{ steps.ver.outputs.version }}
+          VER:    ${{ steps.v.outputs.version }}
           BEARER: ${{ secrets.COOLIFY_TOKEN }}
           CFID:   ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CFSEC:  ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
@@ -285,11 +266,11 @@ jobs:
           echo "image tag PATCH -> ${code}"
           if [ "$code" != "200" ]; then cat /tmp/patch.json; exit 1; fi
 
-      # LAST: the only step that touches production. A failure here leaves the
-      # git tag and the registry correct and is simply retryable.
+      # The only step that touches production. A failure here leaves the git tag and the
+      # registry correct; a re-run redeploys this tag (unless a newer one exists).
       - name: Deploy
         id: deploy
-        if: steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != ''
+        if: steps.v.outputs.stale != 'true' && inputs.publish-image && inputs.coolify-app-uuid != ''
         env:
           UUID:   ${{ inputs.coolify-app-uuid }}
           BEARER: ${{ secrets.COOLIFY_TOKEN }}
@@ -313,16 +294,58 @@ jobs:
           fi
           echo "deployment_uuid=${dep}" >> "$GITHUB_OUTPUT"
 
-      # "Deploy" only queues. Poll until Coolify reports a terminal status, then mark the Release:
-      # finished + the app still on $VER -> Latest; finished but a newer merge already moved the app ->
-      # superseded (an older deploy finishing last must not take Latest); anything else -> failed, and
-      # the job fails. A non-200 poll (Access edge, Coolify restarting) is retried until the timeout.
-      # Response bodies are never printed: the deployment record embeds the application, env included.
-      - name: Wait for the deployment and mark the Release
-        if: steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != ''
+      # The repo's "Latest" Release is the version running in production. Runs AFTER Deploy so a
+      # GitHub hiccup here can never stop a deploy. An app Coolify deploys starts "⏳ deploying",
+      # not Latest; the wait step promotes it. A tag-only caller is Latest at once. Notes are the PR
+      # titles since the previous v* tag (gh prepends --notes-file text to the generated notes).
+      # On a re-run the Release may already exist: its state line is reset to "⏳ deploying".
+      - name: Create or refresh the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          VER:    ${{ steps.ver.outputs.version }}
+          VER:     ${{ steps.v.outputs.version }}
+          STALE:   ${{ steps.v.outputs.stale }}
+          HIGHEST: ${{ steps.v.outputs.highest }}
+          WAIT:    ${{ inputs.publish-image && inputs.coolify-app-uuid != '' }}
+        run: |
+          set -euo pipefail
+          set_state() {  # $1 = state line; $2 = optional --latest. Replaces an existing state line.
+            gh release view "$VER" --json body -q .body > "$RUNNER_TEMP/body.md"
+            if head -n1 "$RUNNER_TEMP/body.md" | grep -qE '^(⏳|✅|❌|❔|⏸|↩)'; then
+              tail -n +2 "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/rest.md"
+            else
+              cp "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/rest.md"
+            fi
+            { printf '%s\n' "$1"; cat "$RUNNER_TEMP/rest.md"; } > "$RUNNER_TEMP/new.md"
+            gh release edit "$VER" --notes-file "$RUNNER_TEMP/new.md" ${2:+"$2"}
+            echo "Release ${VER}: $1"
+          }
+          if gh release view "$VER" >/dev/null 2>&1; then
+            if [ "$STALE" != "true" ] && [ "$WAIT" = "true" ]; then set_state "⏳ deploying"; fi
+            exit 0
+          fi
+          if [ "$STALE" = "true" ]; then
+            printf '%s\n' "⏸ superseded by ${HIGHEST}" > "$RUNNER_TEMP/notes.md"; latest="--latest=false"
+          elif [ "$WAIT" = "true" ]; then
+            printf '%s\n' "⏳ deploying" > "$RUNNER_TEMP/notes.md"; latest="--latest=false"
+          else
+            : > "$RUNNER_TEMP/notes.md"; latest="--latest"
+          fi
+          gh release create "$VER" --verify-tag --generate-notes --title "$VER" \
+            "$latest" --notes-file "$RUNNER_TEMP/notes.md"
+          echo "created Release ${VER} (${latest})"
+
+      # "Deploy" only queues. Poll until Coolify reports a terminal status, then mark the Release:
+      # finished + the app still on $VER -> Latest; finished but a newer merge already moved the app ->
+      # superseded (an older deploy finishing last must not take Latest); failed/cancelled/error ->
+      # failed; no terminal status in time -> unknown (a re-run checks again). The last two fail the
+      # job. A non-200 poll (Access edge, Coolify restarting) is retried until the timeout.
+      # Response bodies are never printed and never outlive the step: the deployment record embeds
+      # the application, env included.
+      - name: Wait for the deployment and mark the Release
+        if: steps.v.outputs.stale != 'true' && inputs.publish-image && inputs.coolify-app-uuid != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER:    ${{ steps.v.outputs.version }}
           UUID:   ${{ inputs.coolify-app-uuid }}
           DEP:    ${{ steps.deploy.outputs.deployment_uuid }}
           BEARER: ${{ secrets.COOLIFY_TOKEN }}
@@ -334,6 +357,7 @@ jobs:
           set -euo pipefail
           API="https://coolify.brandtstack.com/api/v1"
           R="$RUNNER_TEMP/coolify.json"
+          trap 'rm -f "$R"' EXIT
           get() {   # $1 = API path; prints the HTTP code, body goes to $R
             curl -sS --max-time 15 -o "$R" -w '%{http_code}' \
               -H "Authorization: Bearer ${BEARER}" \
@@ -341,19 +365,24 @@ jobs:
               -H "CF-Access-Client-Secret: ${CFSEC}" \
               "${API}$1" 2>/dev/null || echo 000
           }
-          mark() {  # $1 = new first line; $2 = optional --latest
+          field() { jq -r "$1 // empty" "$R" 2>/dev/null || true; }   # non-JSON body -> ""
+          set_state() {  # $1 = state line; $2 = optional --latest. Replaces an existing state line.
             gh release view "$VER" --json body -q .body > "$RUNNER_TEMP/body.md"
-            { printf '%s\n' "$1"; tail -n +2 "$RUNNER_TEMP/body.md"; } > "$RUNNER_TEMP/new.md"
+            if head -n1 "$RUNNER_TEMP/body.md" | grep -qE '^(⏳|✅|❌|❔|⏸|↩)'; then
+              tail -n +2 "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/rest.md"
+            else
+              cp "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/rest.md"
+            fi
+            { printf '%s\n' "$1"; cat "$RUNNER_TEMP/rest.md"; } > "$RUNNER_TEMP/new.md"
             gh release edit "$VER" --notes-file "$RUNNER_TEMP/new.md" ${2:+"$2"}
             echo "Release ${VER}: $1"
           }
-
           status=timeout
           deadline=$(( $(date +%s) + POLL_TIMEOUT ))
           while :; do
             code=$(get "/deployments/${DEP}")
             if [ "$code" = "200" ]; then
-              s=$(jq -r '.status // empty' "$R")
+              s=$(field .status)
               case "$s" in
                 finished|failed|cancelled-by-user|error) status="$s"; break ;;
               esac
@@ -365,22 +394,48 @@ jobs:
             sleep "$POLL_INTERVAL"
           done
 
-          if [ "$status" != "finished" ]; then
-            rm -f "$R"
-            mark "❌ deploy failed (${status})"
-            echo "::error::Coolify deployment ${DEP} ended '${status}'; ${VER} is not in production."
-            exit 1
-          fi
+          case "$status" in
+            finished) ;;
+            timeout)
+              set_state "❔ deploy state unknown (timeout)"
+              echo "::error::Coolify deployment ${DEP} did not finish within ${POLL_TIMEOUT}s; re-run to check again."
+              exit 1 ;;
+            *)
+              set_state "❌ deploy failed (${status})"
+              echo "::error::Coolify deployment ${DEP} ended '${status}'; ${VER} is not in production."
+              exit 1 ;;
+          esac
 
           cur=""
-          if [ "$(get "/applications/${UUID}")" = "200" ]; then
-            cur=$(jq -r '.docker_registry_image_tag // empty' "$R")
-          fi
-          rm -f "$R"
+          if [ "$(get "/applications/${UUID}")" = "200" ]; then cur=$(field .docker_registry_image_tag); fi
           if [ -n "$cur" ] && [ "$cur" != "$VER" ]; then
-            mark "⏸ superseded by ${cur}"
+            set_state "⏸ superseded by ${cur}"
           else
             # An unreadable app record after a finished deploy is still a finished deploy.
             [ -n "$cur" ] || echo "::warning::could not read the app's image tag; marking ${VER} live"
-            mark "✅ live in production $(date -u +%Y-%m-%dT%H:%M:%SZ)" --latest
+            set_state "✅ live in production $(date -u +%Y-%m-%dT%H:%M:%SZ)" --latest
           fi
+
+      # A Coolify step before the wait failed: the Release (if it got created) still says
+      # "⏳ deploying". Say what happened instead. Only touches a Release in that exact state.
+      - name: Mark a Release whose deploy never started
+        if: failure() && steps.v.outputs.stale != 'true' && inputs.publish-image && inputs.coolify-app-uuid != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          set_state() {  # $1 = state line; $2 = optional --latest. Replaces an existing state line.
+            gh release view "$VER" --json body -q .body > "$RUNNER_TEMP/body.md"
+            if head -n1 "$RUNNER_TEMP/body.md" | grep -qE '^(⏳|✅|❌|❔|⏸|↩)'; then
+              tail -n +2 "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/rest.md"
+            else
+              cp "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/rest.md"
+            fi
+            { printf '%s\n' "$1"; cat "$RUNNER_TEMP/rest.md"; } > "$RUNNER_TEMP/new.md"
+            gh release edit "$VER" --notes-file "$RUNNER_TEMP/new.md" ${2:+"$2"}
+            echo "Release ${VER}: $1"
+          }
+          [ -n "$VER" ] || exit 0
+          first=$(gh release view "$VER" --json body -q .body 2>/dev/null | head -n1 || true)
+          if [ "$first" = "⏳ deploying" ]; then set_state "❌ deploy not started"; fi
