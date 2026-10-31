@@ -169,6 +169,54 @@ def rows(port):
     add("rerun-existing-release: leaves it alone", r["rc"] == 0 and not creates(r) and not edits(r),
         json.dumps(r["calls"]) + r["out"])
 
+    W = "Wait for the deployment and mark the Release"
+    deploying = {VER: {"body": "⏳ deploying\n## What's Changed\n* feat: a change\n", "latest": False}}
+
+    def first(r):
+        return r["rel"][VER]["body"].split("\n", 1)[0]
+
+    def kept(r):
+        # `gh … -q .body` adds a trailing newline; only the content after the state line matters
+        rest = r["rel"][VER]["body"].split("\n", 1)[1:]
+        return [x.strip() for x in rest] == ["## What's Changed\n* feat: a change"]
+
+    r = run(port, W, releases=deploying, script={"deployments": [(200, "in_progress"), (200, "finished")]})
+    add("finished: Latest, ✅ live line, generated notes kept",
+        r["rc"] == 0 and r["rel"][VER]["latest"] and first(r).startswith("✅ live in production 20") and kept(r),
+        json.dumps(r["calls"]) + r["out"])
+
+    r = run(port, W, releases=deploying, script={"deployments": [(200, "in_progress"), (200, "failed")]})
+    add("failed: ❌ line, not Latest, step fails",
+        r["rc"] != 0 and not r["rel"][VER]["latest"] and first(r) == "❌ deploy failed (failed)" and kept(r),
+        json.dumps(r["calls"]) + r["out"])
+
+    r = run(port, W, releases=deploying, script={"deployments": [(200, "in_progress")]},
+            env={"POLL_TIMEOUT": "2", "POLL_INTERVAL": "1"})
+    add("timeout: ❌ deploy failed (timeout), step fails",
+        r["rc"] != 0 and not r["rel"][VER]["latest"] and first(r) == "❌ deploy failed (timeout)",
+        json.dumps(r["calls"]) + r["out"])
+
+    r = run(port, W, releases=deploying, script={"deployments": [(403, "-"), (502, "-"), (200, "finished")]})
+    add("transient-then-finished: 403/502 mid-poll are retried, then live",
+        r["rc"] == 0 and r["rel"][VER]["latest"] and first(r).startswith("✅ live"), json.dumps(r["calls"]) + r["out"])
+
+    r = run(port, W, releases=deploying, script={"deployments": [(200, "finished")], "app_tag": "v9.9.9"})
+    add("superseded: a newer tag is on the app, so not Latest",
+        r["rc"] == 0 and not r["rel"][VER]["latest"] and first(r) == "⏸ superseded by v9.9.9",
+        json.dumps(r["calls"]) + r["out"])
+
+    r = run(port, W, releases=deploying, script={"deployments": [(200, "in_progress"), (200, "finished")]})
+    blob = r["out"] + r["argv"] + json.dumps(r["calls"]) + json.dumps(r["rel"])
+    add("no-body-leak: nothing from the Coolify bodies reaches output, argv or the Release",
+        FX["PLANTED"] not in blob, "planted value found")
+
+    r = run(port, "Deploy", script={"deploy": {"deployments": [{"message": "queued"}]}})
+    add("missing-uuid: Deploy fails when /deploy returns no deployment_uuid", r["rc"] != 0, r["out"])
+
+    r = run(port, "Deploy")
+    add("deploy-output: Deploy writes deployment_uuid to GITHUB_OUTPUT",
+        r["rc"] == 0 and "deployment_uuid=dep-1" in r["output"], r["out"] + r["output"])
+
     return checks
 
 

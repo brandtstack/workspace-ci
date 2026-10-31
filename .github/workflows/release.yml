@@ -288,6 +288,7 @@ jobs:
       # LAST: the only step that touches production. A failure here leaves the
       # git tag and the registry correct and is simply retryable.
       - name: Deploy
+        id: deploy
         if: steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != ''
         env:
           UUID:   ${{ inputs.coolify-app-uuid }}
@@ -305,3 +306,81 @@ jobs:
           cat /tmp/deploy.json
           if [ "$code" != "200" ]; then exit 1; fi
           echo "deployment queued for ${UUID}"
+          dep=$(jq -r '.deployments[0].deployment_uuid // empty' /tmp/deploy.json)
+          if [ -z "$dep" ]; then
+            echo "::error::/deploy returned no deployment_uuid; cannot confirm the deploy."
+            exit 1
+          fi
+          echo "deployment_uuid=${dep}" >> "$GITHUB_OUTPUT"
+
+      # "Deploy" only queues. Poll until Coolify reports a terminal status, then mark the Release:
+      # finished + the app still on $VER -> Latest; finished but a newer merge already moved the app ->
+      # superseded (an older deploy finishing last must not take Latest); anything else -> failed, and
+      # the job fails. A non-200 poll (Access edge, Coolify restarting) is retried until the timeout.
+      # Response bodies are never printed: the deployment record embeds the application, env included.
+      - name: Wait for the deployment and mark the Release
+        if: steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER:    ${{ steps.ver.outputs.version }}
+          UUID:   ${{ inputs.coolify-app-uuid }}
+          DEP:    ${{ steps.deploy.outputs.deployment_uuid }}
+          BEARER: ${{ secrets.COOLIFY_TOKEN }}
+          CFID:   ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CFSEC:  ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          POLL_INTERVAL: '10'
+          POLL_TIMEOUT:  '600'
+        run: |
+          set -euo pipefail
+          API="https://coolify.brandtstack.com/api/v1"
+          R="$RUNNER_TEMP/coolify.json"
+          get() {   # $1 = API path; prints the HTTP code, body goes to $R
+            curl -sS --max-time 15 -o "$R" -w '%{http_code}' \
+              -H "Authorization: Bearer ${BEARER}" \
+              -H "CF-Access-Client-Id: ${CFID}" \
+              -H "CF-Access-Client-Secret: ${CFSEC}" \
+              "${API}$1" 2>/dev/null || echo 000
+          }
+          mark() {  # $1 = new first line; $2 = optional --latest
+            gh release view "$VER" --json body -q .body > "$RUNNER_TEMP/body.md"
+            { printf '%s\n' "$1"; tail -n +2 "$RUNNER_TEMP/body.md"; } > "$RUNNER_TEMP/new.md"
+            gh release edit "$VER" --notes-file "$RUNNER_TEMP/new.md" ${2:+"$2"}
+            echo "Release ${VER}: $1"
+          }
+
+          status=timeout
+          deadline=$(( $(date +%s) + POLL_TIMEOUT ))
+          while :; do
+            code=$(get "/deployments/${DEP}")
+            if [ "$code" = "200" ]; then
+              s=$(jq -r '.status // empty' "$R")
+              case "$s" in
+                finished|failed|cancelled-by-user|error) status="$s"; break ;;
+              esac
+              echo "deployment ${DEP}: ${s:-unknown}"
+            else
+              echo "deployment poll -> HTTP ${code}, retrying"
+            fi
+            [ "$(date +%s)" -lt "$deadline" ] || break
+            sleep "$POLL_INTERVAL"
+          done
+
+          if [ "$status" != "finished" ]; then
+            rm -f "$R"
+            mark "❌ deploy failed (${status})"
+            echo "::error::Coolify deployment ${DEP} ended '${status}'; ${VER} is not in production."
+            exit 1
+          fi
+
+          cur=""
+          if [ "$(get "/applications/${UUID}")" = "200" ]; then
+            cur=$(jq -r '.docker_registry_image_tag // empty' "$R")
+          fi
+          rm -f "$R"
+          if [ -n "$cur" ] && [ "$cur" != "$VER" ]; then
+            mark "⏸ superseded by ${cur}"
+          else
+            # An unreadable app record after a finished deploy is still a finished deploy.
+            [ -n "$cur" ] || echo "::warning::could not read the app's image tag; marking ${VER} live"
+            mark "✅ live in production $(date -u +%Y-%m-%dT%H:%M:%SZ)" --latest
+          fi
