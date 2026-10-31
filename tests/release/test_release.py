@@ -94,12 +94,12 @@ def git_repo(base, tag=None, newer=None):
     return repo, sha
 
 
-def run(port, name, *, env=None, releases=None, fail=None, script=None, tag=None, newer=None):
+def run(port, name, *, env=None, releases=None, fail=None, fail_once=None, script=None, tag=None, newer=None):
     Stub.script, Stub.polls = dict(script or {}), 0
     base = tempfile.mkdtemp()
     try:
         state = os.path.join(base, "gh-state.json")
-        json.dump({"releases": releases or {}, "fail": fail or [], "calls": []}, open(state, "w"))
+        json.dump({"releases": releases or {}, "fail": fail or [], "fail_once": fail_once or [], "calls": []}, open(state, "w"))
         bindir = os.path.join(base, "bin")
         os.makedirs(bindir)
         shutil.copy(FAKE_GH, os.path.join(bindir, "gh"))
@@ -119,7 +119,7 @@ def run(port, name, *, env=None, releases=None, fail=None, script=None, tag=None
              "FAKE_GH_STATE": state, "RUNNER_TEMP": rt, "GITHUB_OUTPUT": out_file, "GITHUB_SHA": sha,
              "GH_TOKEN": FX["GH_TOKEN"], "VER": VER, "WAIT": "true", "UUID": "app-1", "DEP": "dep-1",
              "BEARER": FX["BEARER"], "CFID": FX["CFID"], "CFSEC": FX["CFSEC"],
-             "POLL_INTERVAL": "0", "POLL_TIMEOUT": "5"}
+             "POLL_INTERVAL": "0", "POLL_TIMEOUT": "5", "RETRY_SLEEP": "0"}
         e.update(env or {})
         e = {k: v for k, v in e.items() if v is not None}
         path = os.path.join(base, "step.sh")
@@ -169,6 +169,9 @@ def rows(port):
     add("Mark only fires when Wait was skipped (not when Wait itself failed)",
         "failure()" in mk and "steps.wait.outcome == 'skipped'" in mk, mk)
     add("helper step always runs", steps["Write the Release state helper"]["if"] == "always()", "")
+    wt = steps["Wait for the deployment and mark the Release"]["if"]
+    add("Wait does not depend on Create: !cancelled() + Deploy succeeded",
+        "!cancelled()" in wt and "steps.deploy.outcome == 'success'" in wt, wt)
 
     # ---- Resolve the version to release ----
     V = "Resolve the version to release"
@@ -194,6 +197,8 @@ def rows(port):
         json.dumps(r["calls"]) + r["out"])
     r = run(port, C, env=first_run, fail=["create"])
     add("gh-fails: a failed create fails the step", r["rc"] != 0, r["out"])
+    r = run(port, C, env=first_run, fail_once=["create"])
+    add("create retries a transient failure", r["rc"] == 0 and len(creates(r)) == 2 and VER in r["rel"], r["out"])
     r = run(port, C, env={"SKIP": "true"})
     add("rerun-missing-release: created as ❔, not Latest",
         r["rc"] == 0 and r["rel"][VER]["body"].startswith("❔ created on re-run; deploy state not checked")
@@ -208,6 +213,9 @@ def rows(port):
         r["rc"] == 0 and r["rel"][VER]["body"].startswith("❌ deploy not started\n## What's Changed"), json.dumps(r["rel"]) + r["out"])
     r = run(port, M, releases={VER: {"body": "❌ deploy failed (failed)\n", "latest": False}})
     add("never-started: a Release in any other state is left alone", r["rc"] == 0 and not edits(r), json.dumps(r["calls"]))
+    r = run(port, M, env={"QUEUED": "true"}, releases={VER: {"body": "⏳ deploying\n## What's Changed\n", "latest": False}})
+    add("queued-but-no-uuid: ❔ deploy queued; state not confirmed (not ❌ not started)",
+        r["rc"] == 0 and r["rel"][VER]["body"].startswith("❔ deploy queued; state not confirmed\n"), json.dumps(r["rel"]))
     r = run(port, M)
     add("never-started: no Release (create itself failed) is a no-op", r["rc"] == 0 and not edits(r) and not creates(r), r["out"])
 
@@ -267,6 +275,17 @@ def rows(port):
     add("cancelled because a newer merge took over: ⏸ superseded, step passes",
         r["rc"] == 0 and first(r) == "⏸ superseded by v1.2.4" and not r["rel"][VER]["latest"], json.dumps(r["rel"]) + r["out"])
 
+    r = run(port, W, script={"deployments": [(200, "finished")]})
+    add("Create failed earlier: Wait creates the Release late, live + Latest",
+        r["rc"] == 0 and r["rel"].get(VER, {}).get("latest") and r["rel"][VER]["body"].startswith("✅ live"), json.dumps(r["rel"]) + r["out"])
+
+    r = run(port, W, releases={VER: {"body": "⏳ deploying\n## What's Changed\n* x\n\n\n", "latest": False}},
+            script={"deployments": [(200, "finished")]})
+    add("state edits never accumulate trailing blank lines", not r["rel"][VER]["body"].endswith("\n\n"), repr(r["rel"][VER]["body"]))
+
+    r = run(port, W, releases=deploying, script={"deployments": [(200, "failed")]}, fail=["edit"])
+    add("the deploy outcome is logged before any gh call", "ended: failed" in r["out"], r["out"])
+
     r = run(port, W, releases=deploying, script={"deployments": [(200, "finished")], "app_code": 500})
     add("app-record-unreadable: finished deploy is still marked live + Latest, with a warning",
         r["rc"] == 0 and r["rel"][VER]["latest"] and first(r).startswith("✅ live") and "::warning::" in r["out"],
@@ -281,7 +300,7 @@ def rows(port):
     add("response file never outlives the step (success path)", "coolify.json" not in r["left"], str(r["left"]))
 
     r = run(port, "Deploy", script={"deploy": {"deployments": [{"message": "queued"}]}})
-    add("missing-uuid: Deploy fails when /deploy returns no deployment_uuid", r["rc"] != 0, r["out"])
+    add("missing-uuid: Deploy fails, but records that it queued", r["rc"] != 0 and "queued=true" in r["output"], r["out"] + r["output"])
 
     r = run(port, "Deploy")
     add("deploy-output: Deploy writes deployment_uuid to GITHUB_OUTPUT",

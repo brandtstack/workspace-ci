@@ -31,6 +31,11 @@ def notes():
 
 if argv[:1] == ["release"] and len(argv) >= 3:
     sub, tag = argv[1], argv[2]
+    if sub in state.get("fail_once", []):
+        state["fail_once"].remove(sub)
+        save()
+        sys.stderr.write("HTTP 502: fake transient failure\n")
+        sys.exit(1)
     if sub in state.get("fail", []):
         save()
         sys.stderr.write("HTTP 500: fake failure\n")

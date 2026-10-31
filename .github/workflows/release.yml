@@ -204,7 +204,17 @@ jobs:
           cat > "$RUNNER_TEMP/release-state.sh" <<'SH'
           # set_state LINE [--latest]: replace the Release's state line (or prepend one), keep the notes.
           set_state() {
-            gh release view "$VER" --json body -q .body > "$RUNNER_TEMP/body.md"
+            if ! gh release view "$VER" --json body -q .body > "$RUNNER_TEMP/raw.md" 2>/dev/null; then
+              # The Create step failed: make the Release here, so a good deploy is still recorded.
+              printf '%s\n' "$1" > "$RUNNER_TEMP/new.md"
+              gh release create "$VER" --verify-tag --generate-notes --title "$VER" \
+                --latest=false --notes-file "$RUNNER_TEMP/new.md"
+              if [ -n "${2:-}" ]; then gh release edit "$VER" "$2"; fi
+              echo "Release ${VER} (created late): $1"
+              return 0
+            fi
+            # gh adds a trailing newline; drop trailing blank lines so edits never accumulate them
+            awk 'NF{for(;n>0;n--)print "";print;next}{n++}' "$RUNNER_TEMP/raw.md" > "$RUNNER_TEMP/body.md"
             if head -n1 "$RUNNER_TEMP/body.md" | grep -qE '^(⏳|✅|❌|❔|⏸|↩)'; then
               tail -n +2 "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/rest.md"
             else
@@ -303,6 +313,7 @@ jobs:
           cat /tmp/deploy.json
           if [ "$code" != "200" ]; then exit 1; fi
           echo "deployment queued for ${UUID}"
+          echo "queued=true" >> "$GITHUB_OUTPUT"
           dep=$(jq -r '.deployments[0].deployment_uuid // empty' /tmp/deploy.json)
           if [ -z "$dep" ]; then
             echo "::error::/deploy returned no deployment_uuid; cannot confirm the deploy."
@@ -336,9 +347,16 @@ jobs:
           else
             : > "$RUNNER_TEMP/notes.md"; latest="--latest"
           fi
-          gh release create "$VER" --verify-tag --generate-notes --title "$VER" \
-            "$latest" --notes-file "$RUNNER_TEMP/notes.md"
-          echo "created Release ${VER} (${latest})"
+          for try in 1 2 3; do
+            if gh release create "$VER" --verify-tag --generate-notes --title "$VER" \
+                 "$latest" --notes-file "$RUNNER_TEMP/notes.md"; then
+              echo "created Release ${VER} (${latest})"
+              exit 0
+            fi
+            [ "$try" = 3 ] || sleep "${RETRY_SLEEP:-5}"
+          done
+          echo "::error::could not create Release ${VER}; the deploy is unaffected (the Wait step creates it late)."
+          exit 1
 
       # "Deploy" only queues. Poll until Coolify reports a terminal status, then mark the Release.
       # Whatever the status, if the app no longer points at $VER a newer merge took over:
@@ -349,7 +367,7 @@ jobs:
       # record embeds the application, env included.
       - name: Wait for the deployment and mark the Release
         id: wait
-        if: steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != ''
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' && steps.guard.outputs.skip == 'false' && inputs.publish-image && inputs.coolify-app-uuid != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           VER:    ${{ steps.v.outputs.version }}
@@ -392,6 +410,7 @@ jobs:
             sleep "$POLL_INTERVAL"
           done
 
+          echo "deployment ${DEP} ended: ${status}"
           if [ "$status" = "timeout" ]; then
             set_state "❔ deploy state unknown (timeout)"
             echo "::error::Coolify deployment ${DEP} did not finish within ${POLL_TIMEOUT}s."
@@ -414,16 +433,22 @@ jobs:
           fi
 
       # A Coolify step before the wait failed, so the Wait step never ran and the Release (created
-      # above anyway) still says "⏳ deploying". Gated on Wait being SKIPPED: when Wait itself ran
+      # above anyway) still says "⏳ deploying". If /deploy had already queued it, say "unconfirmed". Gated on Wait being SKIPPED: when Wait itself ran
       # and failed (say a gh error after a good deploy), it is not "never started".
       - name: Mark a Release whose deploy never started
         if: failure() && steps.guard.outputs.skip == 'false' && steps.wait.outcome == 'skipped' && inputs.publish-image && inputs.coolify-app-uuid != ''
         env:
           GH_TOKEN: ${{ github.token }}
           VER: ${{ steps.v.outputs.version }}
+          QUEUED: ${{ steps.deploy.outputs.queued }}
         run: |
           set -euo pipefail
           [ -n "$VER" ] && [ -f "$RUNNER_TEMP/release-state.sh" ] || exit 0
           . "$RUNNER_TEMP/release-state.sh"
           first=$(gh release view "$VER" --json body -q .body 2>/dev/null | head -n1 || true)
-          if [ "$first" = "⏳ deploying" ]; then set_state "❌ deploy not started"; fi
+          if [ "$first" != "⏳ deploying" ]; then exit 0; fi
+          if [ "${QUEUED:-}" = "true" ]; then
+            set_state "❔ deploy queued; state not confirmed"   # /deploy said yes, then gave no uuid to poll
+          else
+            set_state "❌ deploy not started"
+          fi
