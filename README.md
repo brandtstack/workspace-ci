@@ -16,7 +16,7 @@ actually read.
 | `go-ci.yml` | same shape for Go services (no in-container smoke — distroless has no shell) |
 | `pr-title.yml` | conventional-commit check on the PR title |
 | `pr-review.yml` | one advisory Claude review comment per PR, authenticated by workload identity federation (no API key) |
-| `release.yml` | on merge to main: mint `vX.Y.Z`, promote the tested image, push the tag |
+| `release.yml` | on merge to main: mint `vX.Y.Z`, promote the tested image, push the tag, create the GitHub Release, and (Coolify apps) deploy and mark it Latest once live |
 
 ## Inputs
 
@@ -363,6 +363,41 @@ guard is what allows apps to migrate one at a time.
 Prerequisites, one-time per application: `build_pack` set to `dockerimage`, the GHCR image name set,
 and **`is_auto_deploy_enabled` set to `false`** — otherwise the GitHub-App webhook and this workflow
 race on every merge and the webhook deploys the *previous* tag.
+
+### GitHub Releases: "Latest" is what runs in production
+
+Every new tag gets a GitHub Release whose notes are the PR titles since the previous `v*` tag. Its
+first line says where that version stands:
+
+| First line | Meaning | Latest? |
+| --- | --- | --- |
+| `⏳ deploying` | tag minted, Coolify deploy queued | no |
+| `✅ live in production <UTC>` | Coolify reported the deployment `finished` and the app still points at this tag | **yes** |
+| `❌ deploy failed (<status>)` | Coolify ended `failed` / `cancelled-by-user` / `error`; the job fails | no |
+| `❌ deploy not started` | a Coolify step before the wait failed (set env, point, `/deploy`); the job fails | no |
+| `❔ deploy state unknown (timeout)` | no terminal status within 10 min; the job fails | no |
+| `❔ created on re-run; deploy state not checked` | a re-run found the tag but no Release | no |
+| `⏸ superseded by <tag>` | the deploy ended (any status) after a newer merge had already moved the app on | no |
+
+So the repo page's **Latest** badge is the version Coolify confirmed. A tag-only caller (no
+`coolify-app-uuid`) has nothing to wait for; its Release is Latest at once, with no state line.
+
+- **The Release step runs after `Deploy`**, so a GitHub API hiccup can never stop a deploy. It
+  still runs when a Coolify step failed, so that failure is labelled `❌ deploy not started`.
+- **A re-run never deploys.** Redeploying on "Re-run jobs" would undo a manual tag-swap rollback
+  (the rolled-back version is still the highest tag). A re-run only creates a missing Release, as
+  `❔ created on re-run; deploy state not checked`. After a failed deploy, fix the cause, run
+  `/deploy` by hand, and set the state line with `gh release edit`.
+- A `⏸ superseded` mark also covers an older deploy that Coolify cancelled or failed after a newer
+  merge had already pointed the app elsewhere.
+- Waiting holds the runner for the deploy's length (~70 s for a Next.js app, at most 10 min). The
+  Acer runs 2 jobs at once, so each release holds one of the two slots while it waits.
+- ⚠️ `finished` is Coolify's word. Whether it implies the container's healthcheck passed is **not
+  verified yet**.
+- **Rollback (tag swap)** bypasses this workflow, so move the badge by hand:
+  `gh release edit vOLD --latest`, and change its first line to `↩ rolled back to (from vNEW)`.
+- Everything stays inside the `contents: write` callers already grant. GitHub Deployments would need
+  `deployments: write`, and a reusable workflow cannot request more than its caller grants.
 
 ## Repo settings this assumes
 
