@@ -62,6 +62,25 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # A re-run of a job whose "Create GitHub Release" step failed lands here: the tag exists, so
+      # every other step is skipped. Create the missing Release; the deploy state is unknown, so it
+      # is not marked Latest. Read the run that failed to learn whether the deploy landed.
+      - name: Ensure Release on re-run
+        if: steps.guard.outputs.skip == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(git tag --points-at "$GITHUB_SHA" | grep '^v[0-9]' | head -n1)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release ${tag} exists"
+          else
+            printf '%s\n' "❔ created on re-run; deploy state not checked" > "$RUNNER_TEMP/notes.md"
+            gh release create "$tag" --verify-tag --generate-notes --title "$tag" \
+              --latest=false --notes-file "$RUNNER_TEMP/notes.md"
+            echo "created missing Release ${tag}"
+          fi
+
       - name: Derive version from the squash commit title
         id: ver
         if: steps.guard.outputs.skip == 'false'
@@ -176,6 +195,29 @@ jobs:
           # NOTE: tags pushed with GITHUB_TOKEN do NOT trigger further
           # workflows (GitHub loop prevention). Harmless today; Phase 2's
           # tag-triggered deploy will need a PAT or app token.
+
+      # The repo's "Latest" Release is the version running in production. An app Coolify deploys
+      # starts "⏳ deploying" and not Latest; "Wait for the deployment" below promotes it. A
+      # tag-only caller has nothing to wait for and is Latest at once. Notes are the PR titles since
+      # the previous v* tag (gh prepends --notes-file text to the generated notes).
+      - name: Create GitHub Release
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER:  ${{ steps.ver.outputs.version }}
+          WAIT: ${{ inputs.publish-image && inputs.coolify-app-uuid != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$WAIT" = "true" ]; then
+            printf '%s\n' "⏳ deploying" > "$RUNNER_TEMP/notes.md"
+            latest="--latest=false"
+          else
+            : > "$RUNNER_TEMP/notes.md"
+            latest="--latest"
+          fi
+          gh release create "$VER" --verify-tag --generate-notes --title "$VER" \
+            "$latest" --notes-file "$RUNNER_TEMP/notes.md"
+          echo "created Release ${VER} (${latest})"
 
       # ---- Coolify: point the app at the version just promoted, then deploy ----
       # Guarded on coolify-app-uuid so repos that have not migrated are untouched.
