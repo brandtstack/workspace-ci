@@ -378,8 +378,8 @@ race on every merge and the webhook deploys the *previous* tag.
   ⚠️ **Never require a check that can skip.** `ci / integration` is skipped
   wherever `needs-postgres: false`, and a skipped job never reports — require it only
   on repos that actually run it. Likewise `ci / image` on a repo with
-  `publish-image: false`. A repo with no CI at all (this one) requires a PR and
-  **no** status check.
+  `publish-image: false`. This repo runs only its own `tests` workflow on
+  GitHub-hosted runners, and its ruleset requires a PR with **no** status check.
 - Branch protection needs GitHub Team on private repos; Free enforces rulesets
   on public repos only.
 
