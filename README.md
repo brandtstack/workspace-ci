@@ -375,18 +375,21 @@ first line says where that version stands:
 | `✅ live in production <UTC>` | Coolify reported the deployment `finished` and the app still points at this tag | **yes** |
 | `❌ deploy failed (<status>)` | Coolify ended `failed` / `cancelled-by-user` / `error`; the job fails | no |
 | `❌ deploy not started` | a Coolify step before the wait failed (set env, point, `/deploy`); the job fails | no |
-| `❔ deploy state unknown (timeout)` | no terminal status within 10 min; the job fails, and a re-run checks again | no |
-| `⏸ superseded by <tag>` | finished, but a newer merge had already moved the app on (or a stale re-run, below) | no |
+| `❔ deploy state unknown (timeout)` | no terminal status within 10 min; the job fails | no |
+| `❔ created on re-run; deploy state not checked` | a re-run found the tag but no Release | no |
+| `⏸ superseded by <tag>` | the deploy ended (any status) after a newer merge had already moved the app on | no |
 
 So the repo page's **Latest** badge is the version Coolify confirmed. A tag-only caller (no
 `coolify-app-uuid`) has nothing to wait for; its Release is Latest at once, with no state line.
 
-- **The Release step runs after `Deploy`**, so a GitHub API hiccup can never stop a deploy.
-- **A re-run converges.** Re-running an already-tagged commit runs the Coolify steps, the Release
-  and the wait again for that tag, so a failed deploy, a failed Release or a timeout is fixed by
-  "Re-run jobs". **Exception: a re-run whose tag is no longer the highest `v*` tag is stale.** It
-  never redeploys (that would roll production back); it only creates a missing Release, marked
-  `⏸ superseded by <highest>`.
+- **The Release step runs after `Deploy`**, so a GitHub API hiccup can never stop a deploy. It
+  still runs when a Coolify step failed, so that failure is labelled `❌ deploy not started`.
+- **A re-run never deploys.** Redeploying on "Re-run jobs" would undo a manual tag-swap rollback
+  (the rolled-back version is still the highest tag). A re-run only creates a missing Release, as
+  `❔ created on re-run; deploy state not checked`. After a failed deploy, fix the cause, run
+  `/deploy` by hand, and set the state line with `gh release edit`.
+- A `⏸ superseded` mark also covers an older deploy that Coolify cancelled or failed after a newer
+  merge had already pointed the app elsewhere.
 - Waiting holds the runner for the deploy's length (~70 s for a Next.js app, at most 10 min). The
   Acer runs 2 jobs at once, so each release holds one of the two slots while it waits.
 - ⚠️ `finished` is Coolify's word. Whether it implies the container's healthcheck passed is **not
