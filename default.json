@@ -17,6 +17,12 @@
       "enabled": false
     },
     {
+      "description": "Leave the go.mod `go` directive alone. go-ci builds with `go-version` (default '1.27'), which setup-go satisfies from the runner's cached toolchain (1.27.1 on the Acer), so Renovate's pin to 1.27.3 made `go` refuse to build under GOTOOLCHAIN=local (bcli #8, cc-usage #11, identity #58, 2026-10-29). Moving Go is a fleet change: bump go-ci's default and the directives together, by hand.",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["golang"],
+      "enabled": false
+    },
+    {
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "all non-major",
       "automerge": true
