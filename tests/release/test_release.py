@@ -123,6 +123,9 @@ def run(port, name, *, env=None, releases=None, fail=None, script=None, tag=None
         e.update(env or {})
         e = {k: v for k, v in e.items() if v is not None}
         path = os.path.join(base, "step.sh")
+        if "release-state.sh" in step(name, port):
+            open(path, "w").write(step("Write the Release state helper", port))
+            subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", path], env=e, check=True, cwd=repo)
         open(path, "w").write(step(name, port))
         r = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", path],
                            env=e, capture_output=True, text=True, cwd=repo, timeout=60)
@@ -148,76 +151,71 @@ def rows(port):
     def add(name, ok, detail=""):
         checks.append((name, bool(ok), detail))
 
-    # ---- order: the Release can never block a deploy ----
-    names = [x.get("name", "") for x in yaml.safe_load(open(WORKFLOW))["jobs"]["release"]["steps"]]
+    # ---- order and gating, read from the YAML ----
+    wf = yaml.safe_load(open(WORKFLOW))["jobs"]["release"]["steps"]
+    names = [x.get("name", "") for x in wf]
+    steps = {x.get("name", ""): x for x in wf}
     ix = lambda prefix: next(i for i, n in enumerate(names) if n.startswith(prefix))
-    add("order: Resolve before Coolify; Create/refresh Release after Deploy, before Wait",
-        ix("Resolve the version") < ix("Set APP_VERSION") < ix("Deploy") < ix("Create or refresh") < ix("Wait for"),
-        " | ".join(names))
-    steps = {x.get("name", ""): x for x in yaml.safe_load(open(WORKFLOW))["jobs"]["release"]["steps"]}
-    co = [n for n in steps if n.startswith(("Set APP_VERSION", "Point the Coolify", "Deploy", "Wait for"))]
-    add("coolify steps run on re-runs (not gated on guard) but never when stale",
-        len(co) == 4 and all("stale != 'true'" in steps[n]["if"] and "guard" not in steps[n]["if"] for n in co), str(co))
+    add("order: tag -> helper -> Coolify -> Deploy -> Create Release -> Wait -> Mark",
+        ix("Push git tag") < ix("Write the Release state helper") < ix("Set APP_VERSION") < ix("Deploy")
+        < ix("Create the GitHub Release") < ix("Wait for") < ix("Mark a Release"), " | ".join(names))
+    co = [n for n in names if n.startswith(("Set APP_VERSION", "Point the Coolify", "Deploy", "Wait for"))]
+    add("re-runs never deploy: every Coolify step is gated on guard skip == 'false'",
+        len(co) == 4 and all("steps.guard.outputs.skip == 'false'" in steps[n]["if"] for n in co), str(co))
+    cr = steps["Create the GitHub Release"]["if"]
+    add("Create runs whenever the tag exists, even after a Coolify failure",
+        "!cancelled()" in cr and "steps.tag.outcome == 'success'" in cr and "steps.guard.outputs.skip == 'true'" in cr, cr)
+    mk = next(steps[n]["if"] for n in names if n.startswith("Mark a Release"))
+    add("Mark only fires when Wait was skipped (not when Wait itself failed)",
+        "failure()" in mk and "steps.wait.outcome == 'skipped'" in mk, mk)
+    add("helper step always runs", steps["Write the Release state helper"]["if"] == "always()", "")
 
     # ---- Resolve the version to release ----
     V = "Resolve the version to release"
     r = run(port, V, env={"SKIP": "false", "NEW": "v1.3.0"}, tag="v1.2.3")
-    add("resolve: first run releases the derived version", "version=v1.3.0" in r["output"] and "stale=false" in r["output"], r["output"])
-    r = run(port, V, env={"SKIP": "true", "NEW": ""}, tag=VER)
-    add("resolve: re-run of the newest tag is not stale", "version=%s" % VER in r["output"] and "stale=false" in r["output"], r["output"])
+    add("resolve: first run releases the derived version", "version=v1.3.0" in r["output"], r["output"])
     r = run(port, V, env={"SKIP": "true", "NEW": ""}, tag=VER, newer="v1.2.4")
-    add("resolve: re-run of an older tag is stale (never redeploys)",
-        "version=%s" % VER in r["output"] and "stale=true" in r["output"] and "highest=v1.2.4" in r["output"], r["output"])
+    add("resolve: a re-run releases the commit's own tag", "version=%s" % VER in r["output"], r["output"])
 
-    # ---- Create or refresh the GitHub Release ----
-    C = "Create or refresh the GitHub Release"
-    base_env = {"STALE": "false", "HIGHEST": VER}
-    r = run(port, C, env=base_env)
+    # ---- Create the GitHub Release ----
+    C = "Create the GitHub Release"
+    first_run = {"SKIP": "false"}
+    r = run(port, C, env=first_run)
     c = creates(r)
     add("coolify-deploying: create with --verify-tag --generate-notes --latest=false, notes start ⏳ deploying",
         r["rc"] == 0 and len(c) == 1 and {"--verify-tag", "--generate-notes", "--latest=false"} <= set(c[0])
         and r["rel"].get(VER, {}).get("body", "").startswith("⏳ deploying") and not r["rel"][VER]["latest"],
         json.dumps(r["calls"]) + r["out"])
-
-    r = run(port, C, env=dict(base_env, WAIT="false"))
+    r = run(port, C, env=dict(first_run, WAIT="false"))
     c = creates(r)
     add("no-coolify-latest: create marks --latest, no state line",
         r["rc"] == 0 and len(c) == 1 and "--latest" in c[0] and "--latest=false" not in c[0]
         and r["rel"][VER]["latest"] and not r["rel"][VER]["body"].startswith(("⏳", "❔")),
         json.dumps(r["calls"]) + r["out"])
-
-    r = run(port, C, env=base_env, fail=["create"])
+    r = run(port, C, env=first_run, fail=["create"])
     add("gh-fails: a failed create fails the step", r["rc"] != 0, r["out"])
-
-    r = run(port, C, env=base_env, releases={VER: {"body": "❌ deploy failed (failed)\n## What's Changed\n", "latest": False}})
-    add("rerun-refresh: an existing Release's state line is reset to ⏳ deploying, notes kept",
-        r["rc"] == 0 and not creates(r) and r["rel"][VER]["body"].startswith("⏳ deploying\n## What's Changed"),
-        json.dumps(r["rel"]) + r["out"])
-
-    r = run(port, C, env=base_env, releases={VER: {"body": "## What's Changed\n* x\n", "latest": True}})
-    add("rerun-refresh: a Release with no state line gets one prepended, nothing dropped",
-        r["rc"] == 0 and r["rel"][VER]["body"].startswith("⏳ deploying\n## What's Changed\n* x"), json.dumps(r["rel"]))
-
-    r = run(port, C, env=dict(base_env, WAIT="false"), releases={VER: {"body": "x", "latest": True}})
-    add("tag-only re-run: existing Release left alone", r["rc"] == 0 and not creates(r) and not edits(r), json.dumps(r["calls"]))
-
-    r = run(port, C, env={"STALE": "true", "HIGHEST": "v1.2.4"})
-    add("stale re-run, no Release: created as ⏸ superseded, not Latest",
-        r["rc"] == 0 and r["rel"][VER]["body"].startswith("⏸ superseded by v1.2.4") and not r["rel"][VER]["latest"],
-        json.dumps(r["rel"]) + r["out"])
-
-    r = run(port, C, env={"STALE": "true", "HIGHEST": "v1.2.4"}, releases={VER: {"body": "✅ live\n", "latest": False}})
-    add("stale re-run, Release exists: left alone", r["rc"] == 0 and not edits(r) and not creates(r), json.dumps(r["calls"]))
+    r = run(port, C, env={"SKIP": "true"})
+    add("rerun-missing-release: created as ❔, not Latest",
+        r["rc"] == 0 and r["rel"][VER]["body"].startswith("❔ created on re-run; deploy state not checked")
+        and not r["rel"][VER]["latest"], json.dumps(r["rel"]) + r["out"])
+    r = run(port, C, env={"SKIP": "true"}, releases={VER: {"body": "✅ live\n", "latest": True}})
+    add("rerun-existing-release: left alone", r["rc"] == 0 and not creates(r) and not edits(r), json.dumps(r["calls"]))
 
     # ---- Mark a Release whose deploy never started ----
     M = "Mark a Release whose deploy never started"
     r = run(port, M, releases={VER: {"body": "⏳ deploying\n## What's Changed\n", "latest": False}})
-    add("never-started: ⏳ deploying becomes ❌ deploy not started",
+    add("never-started: ⏳ deploying becomes ❌ deploy not started, notes kept",
         r["rc"] == 0 and r["rel"][VER]["body"].startswith("❌ deploy not started\n## What's Changed"), json.dumps(r["rel"]) + r["out"])
     r = run(port, M, releases={VER: {"body": "❌ deploy failed (failed)\n", "latest": False}})
-    add("never-started: a Release already marked by the wait step is left alone", r["rc"] == 0 and not edits(r), json.dumps(r["calls"]))
+    add("never-started: a Release in any other state is left alone", r["rc"] == 0 and not edits(r), json.dumps(r["calls"]))
     r = run(port, M)
     add("never-started: no Release (create itself failed) is a no-op", r["rc"] == 0 and not edits(r) and not creates(r), r["out"])
+
+    # ---- the helper: replace a state line, or prepend one ----
+    r = run(port, M, releases={VER: {"body": "⏳ deploying\n## What's Changed\n* x\n", "latest": False}})
+    add("helper: replaces the state line instead of stacking a second one",
+        sum(l.startswith(("⏳", "✅", "❌", "❔", "⏸", "↩")) for l in r["rel"][VER]["body"].splitlines()) == 1
+        and "* x" in r["rel"][VER]["body"], json.dumps(r["rel"]))
 
     W = "Wait for the deployment and mark the Release"
     deploying = {VER: {"body": "⏳ deploying\n## What's Changed\n* feat: a change\n", "latest": False}}
@@ -264,6 +262,10 @@ def rows(port):
         r = run(port, W, releases=deploying, script={"deployments": [(200, st)]})
         add("terminal %s: ❌ deploy failed (%s), step fails" % (st, st),
             r["rc"] != 0 and first(r) == "❌ deploy failed (%s)" % st and not r["rel"][VER]["latest"], json.dumps(r["rel"]) + r["out"])
+
+    r = run(port, W, releases=deploying, script={"deployments": [(200, "cancelled-by-user")], "app_tag": "v1.2.4"})
+    add("cancelled because a newer merge took over: ⏸ superseded, step passes",
+        r["rc"] == 0 and first(r) == "⏸ superseded by v1.2.4" and not r["rel"][VER]["latest"], json.dumps(r["rel"]) + r["out"])
 
     r = run(port, W, releases=deploying, script={"deployments": [(200, "finished")], "app_code": 500})
     add("app-record-unreadable: finished deploy is still marked live + Latest, with a warning",
