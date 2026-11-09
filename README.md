@@ -46,6 +46,13 @@ Booleans are real booleans in YAML; `runner` and the string inputs are quoted st
 
 Runs `make verify` (and `make verify-integration` when `needs-postgres`) instead of npm scripts.
 
+After `make verify`, the `verify` job runs **`govulncheck` (pinned `v1.9.0`) on every tracked
+`go.mod`**, with the latest patch of `go-version` (`check-latest`). It deliberately does not use the
+runner's cached patch: govulncheck judges the stdlib of the Go on `PATH`, and the images build
+`FROM golang:<go-version>-alpine`, which is always the latest patch. A reachable vulnerability (exit 3)
+or a scanner error **fails a pull request** but only **warns on a push to `main`**, so it never
+strands a release (`release` needs `ci`). There is no input to turn it off.
+
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
 | `go-version` | string | `'1.27'` | Go version for `setup-go` |

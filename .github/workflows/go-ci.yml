@@ -34,6 +34,56 @@ jobs:
           node-version: ${{ inputs.node-version }}
       - run: make verify
 
+      # govulncheck judges the stdlib of the Go on PATH, and setup-go above takes the runner's
+      # cached patch (go1.27.1 on the Acer, 2026-11-09) while every image builds FROM
+      # golang:<go-version>-alpine, i.e. the latest patch. Scanned with the cached one, all six Go
+      # repos reported 5-12 reachable stdlib vulns that the images do not ship (and 0 with 1.27.3).
+      # So this second setup-go fetches the latest patch, after `make verify` has run on the first.
+      - name: Set up the latest Go ${{ inputs.go-version }} patch for govulncheck
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          check-latest: true
+          cache: false
+
+      # Every module in the repo (git ls-files, so cc-usage's server/go.mod counts). Exit 3 means a
+      # reachable vuln; any other non-zero exit is a scanner error. Policy (Adrian, 2026-11-09):
+      # either FAILS a pull request, but only WARNS on a push, because release `needs: ci` and a
+      # vuln published between a green PR and its merge must not strand that deploy.
+      - name: govulncheck
+        env:
+          GOVULNCHECK_VERSION: v1.9.0
+          ENFORCE: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          bin="$(go env GOPATH)/bin/govulncheck"
+          "$bin" -version
+          mods=$(git ls-files -- ':(glob)**/go.mod')
+          if [ -z "$mods" ]; then
+            echo "::error::govulncheck: no go.mod tracked in this repo"
+            exit 1
+          fi
+          worst=0
+          while IFS= read -r mod; do
+            dir=$(dirname "$mod")
+            echo "::group::govulncheck ${dir}"
+            rc=0
+            (cd "$dir" && "$bin" ./... </dev/null) || rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -eq 3 ]; then
+              msg="govulncheck: reachable vulnerabilities in module ${dir} (expand the group above)"
+            elif [ "$rc" -ne 0 ]; then
+              msg="govulncheck: scanner error (exit ${rc}) in module ${dir}"
+            else
+              echo "govulncheck: ${dir} clean"
+              continue
+            fi
+            if [ "$ENFORCE" = true ]; then echo "::error::${msg}"; else echo "::warning::${msg} (push: not blocking the release)"; fi
+            worst=1
+          done <<< "$mods"
+          if [ "$worst" -ne 0 ] && [ "$ENFORCE" = true ]; then exit 1; fi
+
   integration:
     if: inputs.needs-postgres
     runs-on: ${{ fromJSON(inputs.runner) }}
