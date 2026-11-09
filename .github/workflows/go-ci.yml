@@ -56,8 +56,20 @@ jobs:
           ENFORCE: ${{ github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
-          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
-          bin="$(go env GOPATH)/bin/govulncheck"
+          # Building govulncheck from cold took ~104 s of a 112 s step (bcli, Acer, 2026-11-09); the
+          # scan itself ~7 s. So keep the binary in the runner tool cache (on the Acer, the shared
+          # ci-toolcache volume), keyed by scanner version + exact Go patch: built once per release.
+          # Build in a temp dir beside the target (same filesystem, so the mv is an atomic rename):
+          # two jobs building at once can never leave a half-written binary in place.
+          root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/govulncheck"
+          bin="$root/${GOVULNCHECK_VERSION}-$(go env GOVERSION)"
+          if [ ! -x "$bin" ]; then
+            mkdir -p "$root"
+            tmp=$(mktemp -d "$root/.build.XXXXXX")
+            GOBIN="$tmp" go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+            mv -f "$tmp/govulncheck" "$bin"
+            rmdir "$tmp"
+          fi
           "$bin" -version
           mods=$(git ls-files -- ':(glob)**/go.mod')
           if [ -z "$mods" ]; then

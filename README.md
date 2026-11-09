@@ -51,7 +51,9 @@ After `make verify`, the `verify` job runs **`govulncheck` (pinned `v1.9.0`) on 
 runner's cached patch: govulncheck judges the stdlib of the Go on `PATH`, and the images build
 `FROM golang:<go-version>-alpine`, which is always the latest patch. A reachable vulnerability (exit 3)
 or a scanner error **fails a pull request** but only **warns on a push to `main`**, so it never
-strands a release (`release` needs `ci`). There is no input to turn it off.
+strands a release (`release` needs `ci`). There is no input to turn it off. The built binary is kept
+in the runner tool cache per scanner version + Go patch (a cold build is ~100 s on the Acer; a scan
+is seconds).
 
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
