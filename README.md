@@ -46,6 +46,19 @@ Booleans are real booleans in YAML; `runner` and the string inputs are quoted st
 
 Runs `make verify` (and `make verify-integration` when `needs-postgres`) instead of npm scripts.
 
+After `make verify`, the `verify` job runs **`govulncheck` (pinned `v1.9.0`) on every tracked
+`go.mod`**, with the latest patch of `go-version` (`check-latest`). It deliberately does not use the
+runner's cached patch: govulncheck judges the stdlib of the Go on `PATH`, and the images build
+`FROM golang:<go-version>-alpine`, which is always the latest patch. A reachable vulnerability (exit 3)
+or a scanner error **fails every event except a push**, and on a push only **warns**, so it never
+strands a release (`release` needs `ci`). The same holds when the scanner cannot be set up at all (no
+Go manifest, no module proxy): on a push both steps are `continue-on-error`. There is no input to
+turn it off. The built binary is kept in the runner tool cache per scanner version + Go patch (a cold
+build is ~35-100 s on the Acer; a cache hit makes the whole step ~8 s). A cache hit is trusted by
+path: on the Acer that volume is shared by every repo, which is accepted because all of them are
+private and Adrian's, as for the Go toolchain cached in the same volume. Offline tests:
+`tests/go-ci/test_govulncheck.py`.
+
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
 | `go-version` | string | `'1.27'` | Go version for `setup-go` |

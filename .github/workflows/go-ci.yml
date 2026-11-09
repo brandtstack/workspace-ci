@@ -34,6 +34,90 @@ jobs:
           node-version: ${{ inputs.node-version }}
       - run: make verify
 
+      # govulncheck judges the stdlib of the Go on PATH, and setup-go above takes the runner's
+      # cached patch (go1.27.1 on the Acer, 2026-11-09) while every image builds FROM
+      # golang:<go-version>-alpine, i.e. the latest patch. Scanned with the cached one, all six Go
+      # repos reported 5-12 reachable stdlib vulns that the images do not ship (and 0 with 1.27.3).
+      # So this second setup-go fetches the latest patch, after `make verify` has run on the first.
+      #
+      # Policy (Adrian, 2026-11-09): this check FAILS anything but a push, and only WARNS on a push,
+      # because release `needs: ci` and a vuln published between a green PR and its merge must not
+      # strand that deploy. That covers infrastructure failures too (no manifest, no proxy, a full
+      # disk), hence continue-on-error on a push for both steps, not only the scanner's own exit.
+      - name: Set up the latest Go ${{ inputs.go-version }} patch for govulncheck
+        id: vulngo
+        continue-on-error: ${{ github.event_name == 'push' }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          check-latest: true
+          cache: false
+
+      # Reached only on a push whose setup failed (on any other event that failure already failed
+      # the job). Scanning with the cached patch instead would report vulns the images do not ship.
+      - name: govulncheck skipped (no latest Go patch)
+        if: steps.vulngo.outcome == 'failure'
+        env:
+          GO_VERSION: ${{ inputs.go-version }}
+        run: |
+          echo "::warning::govulncheck did not run - the latest Go ${GO_VERSION} patch could not be set up (push: not blocking the release)"
+
+      # Every module in the repo (git ls-files, so cc-usage's server/go.mod counts). Exit 3 means a
+      # reachable vuln; any other non-zero exit is a scanner error. Both fail, except on a push.
+      # Offline rows: tests/go-ci/test_govulncheck.py.
+      - name: govulncheck
+        if: steps.vulngo.outcome == 'success'
+        continue-on-error: ${{ github.event_name == 'push' }}
+        env:
+          GOVULNCHECK_VERSION: v1.9.0
+          ENFORCE: ${{ github.event_name != 'push' }}
+        run: |
+          set -euo pipefail
+          # Building govulncheck from cold took ~104 s of a 112 s step (bcli, Acer, 2026-11-09); the
+          # scan itself ~7 s. So keep the binary in the runner tool cache (on the Acer, the shared
+          # ci-toolcache volume), keyed by scanner version + exact Go patch: built once per release.
+          # Build in a temp dir beside the target (same filesystem, so the mv is an atomic rename):
+          # two jobs building at once can never leave a half-written binary in place.
+          # ⚠️ Trust: a cache hit is trusted by path. Any job on the Acer can write this volume, so
+          # one repo's PR code could plant a binary another repo then runs. Accepted, as for the Go
+          # toolchain setup-go caches in the same volume: every repo on this runner is private and
+          # Adrian's (infra/reference/ci-runner.md). A checksum kept on the same volume adds nothing.
+          root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/govulncheck"
+          bin="$root/${GOVULNCHECK_VERSION}-$(go env GOVERSION)"
+          tmp=""
+          trap '[ -z "$tmp" ] || rm -rf "$tmp"' EXIT
+          if [ ! -x "$bin" ]; then
+            mkdir -p "$root"
+            tmp=$(mktemp -d "$root/.build.XXXXXX")
+            GOBIN="$tmp" go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+            mv -f "$tmp/govulncheck" "$bin"
+          fi
+          "$bin" -version
+          mods=$(git ls-files -- ':(glob)**/go.mod')
+          if [ -z "$mods" ]; then
+            echo "::error::govulncheck: no go.mod tracked in this repo"
+            exit 1
+          fi
+          worst=0
+          while IFS= read -r mod; do
+            dir=$(dirname "$mod")
+            echo "::group::govulncheck ${dir}"
+            rc=0
+            (cd "$dir" && "$bin" ./... </dev/null) || rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -eq 3 ]; then
+              msg="govulncheck: reachable vulnerabilities in module ${dir} (expand the group above)"
+            elif [ "$rc" -ne 0 ]; then
+              msg="govulncheck: scanner error (exit ${rc}) in module ${dir}"
+            else
+              echo "govulncheck: ${dir} clean"
+              continue
+            fi
+            if [ "$ENFORCE" = true ]; then echo "::error::${msg}"; else echo "::warning::${msg} (push: not blocking the release)"; fi
+            worst=1
+          done <<< "$mods"
+          if [ "$worst" -ne 0 ] && [ "$ENFORCE" = true ]; then exit 1; fi
+
   integration:
     if: inputs.needs-postgres
     runs-on: ${{ fromJSON(inputs.runner) }}
