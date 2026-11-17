@@ -29,6 +29,9 @@ jobs:
       - name: Offline tests for go-ci.yml's govulncheck steps
         run: |
           "$RUNNER_TEMP/venv/bin/python" tests/go-ci/test_govulncheck.py
+      - name: Offline tests for node-ci.yml's favicon input
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" tests/node-ci/test_favicon.py
       # Renovate reads default.json (the shared preset) and renovate.json. Named explicitly: with no
       # arguments the validator checks renovate.json only. --strict makes a config that Renovate would
       # have to auto-migrate fail the job. It does not resolve `extends` presets, so a misspelt preset

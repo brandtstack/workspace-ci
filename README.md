@@ -23,7 +23,7 @@ actually read.
 Every `workflow_call` input, read from the workflow files (the source of truth). All are optional.
 Booleans are real booleans in YAML; `runner` and the string inputs are quoted strings.
 
-### `node-ci.yml` (14)
+### `node-ci.yml` (15)
 
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
@@ -41,6 +41,7 @@ Booleans are real booleans in YAML; `runner` and the string inputs are quoted st
 | `private-registry` | boolean | `false` | Wire the `@brandtstack` GitHub Packages registry into `npm ci` (all jobs) and the image build (as a BuildKit secret, not a build-arg), using the caller's `GITHUB_TOKEN`. No PAT |
 | `publish-image` | boolean | `true` | Run the `image` job (PR only): build, smoke, push `ghcr.io/<repo>:sha-<head>`. Set `false` for repos that do not deploy a registry image |
 | `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` (see *Running on the self-hosted runner*) |
+| `favicon` | string | `''` | Newline-separated favicon paths, passed verbatim to [`brandtstack/tabcheck`](https://github.com/brandtstack/tabcheck) in the `verify` job after `npm run verify`. Empty skips the check. Paths are relative to the **checkout root**, even when `working-directory` is set |
 
 ### `go-ci.yml` (11)
 
@@ -456,6 +457,10 @@ rollback is a tag swap.
 build-time vars are rendered as Docker `ARG`s into the public build log) before
 pointing it at the new tag, so the running container reports the minted version
 rather than a `SOURCE_COMMIT` short SHA.
+
+## Renovate grouping
+
+The shared preset (`default.json`) folds `digest`, `pin` and `pinDigest` updates into the weekly `all non-major` group alongside `minor` and `patch`, so action pins and `workspace-ci` digest bumps no longer open a PR each. The group has `automerge: true`, so these bumps now merge on their own once the required checks are green (before this they waited for a manual merge): a `workspace-ci` change reaches each caller through its weekly group PR, gated only by that repo's CI, and the merge deploys. The `pr-review.yml` exclusion rule sits after the group rule and still wins. `lockFileMaintenance` stays on but runs `before 6am on the first day of the month` instead of weekly. `rebaseWhen: conflicted` is deliberately not set: the rulesets sampled have `strict_required_status_checks_policy: true`, so automerge needs up-to-date branches and the rebase re-runs stay.
 
 ## Parked majors in the preset
 

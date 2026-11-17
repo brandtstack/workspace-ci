@@ -34,6 +34,10 @@ on:
       # '["self-hosted","priv-ci"]'. The default stays GitHub-hosted, so this public repo and
       # every caller that does not opt in never touch the Acer. NEVER set it from a public repo.
       runner:            { type: string,  default: '"ubuntu-latest"' }
+      # Newline-separated favicon paths, relative to the CHECKOUT ROOT (not working-directory),
+      # passed verbatim to tabcheck's `path`. Empty skips the check. Runs in the verify job after
+      # `npm run verify`, so a broken build fails first.
+      favicon:           { type: string,  default: '' }
 
 permissions:
   contents: read
@@ -62,6 +66,15 @@ jobs:
         env:
           NPM_TOKEN: ${{ inputs.private-registry && secrets.GITHUB_TOKEN || '' }}
       - run: npm run verify
+      # `uses:` steps ignore defaults.run.working-directory, so favicon paths are root-relative.
+      # PLAYWRIGHT_BROWSERS_PATH is the shared toolcache volume: Chromium downloads once per Acer.
+      - name: Favicon contrast (tabcheck)
+        if: inputs.favicon != ''
+        uses: brandtstack/tabcheck@6dcc3c5a8ddd08a48fc10e0ca0d2d7894f3443b9 # v0.3.0
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: /opt/hostedtoolcache/ms-playwright
+        with:
+          path: ${{ inputs.favicon }}
 
   integration:
     if: inputs.needs-postgres
