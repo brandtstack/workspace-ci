@@ -10,22 +10,23 @@
   "postUpdateOptions": ["npmInstallTwice"],
   "packageRules": [
     {
-      "description": "Leave the pr-review.yml caller on @main. The Anthropic federation rule only accepts job_workflow_ref == brandtstack/workspace-ci/.github/workflows/pr-review.yml@refs/heads/main, and pinDigests would rewrite @main to @<sha> # main, which the rule then rejects (an opaque 401, no review). Scoped to the caller file the README prescribes, so node-ci, go-ci, pr-title and release stay pinned.",
-      "matchManagers": ["github-actions"],
-      "matchDepNames": ["brandtstack/workspace-ci"],
-      "matchFileNames": [".github/workflows/pr-review.yml"],
-      "enabled": false
-    },
-    {
       "description": "Leave the go.mod `go` directive alone. go-ci builds with `go-version` (default '1.27'), which setup-go satisfies from the runner's cached toolchain (1.27.1 on the Acer), so Renovate's pin to 1.27.3 made `go` refuse to build under GOTOOLCHAIN=local (bcli #8, cc-usage #11, identity #58, 2026-10-29). Moving Go is a fleet change: bump go-ci's default and the directives together, by hand.",
       "matchManagers": ["gomod"],
       "matchDepTypes": ["golang"],
       "enabled": false
     },
     {
-      "matchUpdateTypes": ["minor", "patch"],
+      "description": "One weekly PR for every non-major update, including action pins and digest bumps (each was its own PR). The pr-review.yml exclusion below is an `enabled: false` rule that this group does not override.",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
       "groupName": "all non-major",
       "automerge": true
+    },
+    {
+      "description": "Leave the pr-review.yml caller on @main. The Anthropic federation rule only accepts job_workflow_ref == brandtstack/workspace-ci/.github/workflows/pr-review.yml@refs/heads/main, and pinDigests would rewrite @main to @<sha> # main, which the rule then rejects (an opaque 401, no review). Scoped to the caller file the README prescribes, so node-ci, go-ci, pr-title and release stay pinned.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["brandtstack/workspace-ci"],
+      "matchFileNames": [".github/workflows/pr-review.yml"],
+      "enabled": false
     },
     {
       "matchDepTypes": ["devDependencies"],
@@ -58,5 +59,5 @@
     "automerge": true,
     "schedule": ["at any time"]
   },
-  "lockFileMaintenance": { "enabled": true }
+  "lockFileMaintenance": { "enabled": true, "schedule": ["before 6am on the first day of the month"] }
 }
