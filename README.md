@@ -460,7 +460,7 @@ rather than a `SOURCE_COMMIT` short SHA.
 
 ## Renovate grouping
 
-The shared preset (`default.json`) folds `digest`, `pin` and `pinDigest` updates into the weekly `all non-major` group alongside `minor` and `patch`, so action pins and `workspace-ci` digest bumps no longer open a PR each. The `pr-review.yml` exclusion rule sits after the group rule and still wins. `lockFileMaintenance` stays on but runs `before 6am on the first day of the month` instead of weekly. `rebaseWhen: conflicted` is deliberately not set: the rulesets sampled have `strict_required_status_checks_policy: true`, so automerge needs up-to-date branches and the rebase re-runs stay.
+The shared preset (`default.json`) folds `digest`, `pin` and `pinDigest` updates into the weekly `all non-major` group alongside `minor` and `patch`, so action pins and `workspace-ci` digest bumps no longer open a PR each. The group has `automerge: true`, so these bumps now merge on their own once the required checks are green (before this they waited for a manual merge): a `workspace-ci` change reaches each caller through its weekly group PR, gated only by that repo's CI, and the merge deploys. The `pr-review.yml` exclusion rule sits after the group rule and still wins. `lockFileMaintenance` stays on but runs `before 6am on the first day of the month` instead of weekly. `rebaseWhen: conflicted` is deliberately not set: the rulesets sampled have `strict_required_status_checks_policy: true`, so automerge needs up-to-date branches and the rebase re-runs stay.
 
 ## Parked majors in the preset
 
