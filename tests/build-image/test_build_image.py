@@ -200,12 +200,16 @@ class BuildImage(unittest.TestCase):
         self.assertNotIn("PUBLIC_BUILD_ENV_B64", b)
         self.assertNotIn("--target", b)
 
-    def test_custom_uses_repo_dockerfile_and_no_args(self):
+    def test_custom_uses_repo_dockerfile_and_only_the_public_build_env(self):
         d = self.repo("ok-custom")
+        with open(os.path.join(d, ".github", "build.yml"), "a") as f:
+            f.write("build-args:\n  VITE_A: '1'\n")
         r = self.run_bi("--no-verify", d)
         b = self.argv(self.calls("podman", "build")[0])
         self.assertIn("-f " + os.path.realpath(d) + "/deploy/Dockerfile", b)
-        self.assertNotIn("--build-arg", b)
+        self.assertEqual(b.count("--build-arg"), 1)
+        self.assertIn("--build-arg PUBLIC_BUILD_ENV_B64=" + base64.b64encode(b"VITE_A=1").decode(), b)
+        self.assertNotIn("NODE=", b)
         self.assertNotIn("--target", b)
         self.assertIn("--build-context ws=", b)
 
@@ -230,11 +234,23 @@ class BuildImage(unittest.TestCase):
         self.assertIn("--sysctl net.ipv4.ip_unprivileged_port_start=0", run)
         self.assertIn("-p 127.0.0.1:8080:80", run)
         self.assertIn("--path /health --port 3000", run)
-        self.assertTrue(run.rstrip().endswith("localhost/demo-app:dev"))
+        # dotenvx: the ENTRYPOINT wrapper needs the private key, so the smoke bypasses it (as app.yml does)
+        self.assertTrue(run.rstrip().endswith("--entrypoint node localhost/demo-app:dev server.js"), run)
         self.assertIn("http://127.0.0.1:8080/healthz", self.argv(self.calls("curl")[0]))
         rm = self.calls("podman", "rm")
         self.assertEqual(len(rm), 1)
         self.assertIn("fakecontainerid123", rm[0])
+
+    def test_smoke_without_dotenvx_keeps_the_image_entrypoint(self):
+        self.run_bi("--no-verify", self.repo("ok-spa-min"))
+        run = self.argv(self.calls("podman", "run")[0])
+        self.assertNotIn("--entrypoint", run)
+        self.assertTrue(run.rstrip().endswith("localhost/demo-app:dev"), run)
+        d = self.repo("ok-spa-min", name="plain-next")
+        with open(os.path.join(d, ".github", "build.yml"), "w") as f:
+            f.write("family: next\nnode: '24'\n")
+        self.run_bi("--no-verify", d)
+        self.assertNotIn("--entrypoint", self.argv(self.calls("podman", "run")[-1]))
 
     def test_port_override(self):
         self.run_bi("--no-verify", self.repo("ok-spa-min"), env={"BUILD_IMAGE_PORT": "9091"})

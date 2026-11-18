@@ -71,7 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        family: [next, spa, go]
+        family: [next, next-dotenvx, spa, go]
     permissions:
       contents: read
       packages: write

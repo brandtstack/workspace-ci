@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/brandtstack/workspace-ci/contract/schema.json",
   "title": "build.yml",
-  "description": "The per-repo build contract, .github/build.yml. Documentation, and the source for the reader's key list; it is not run in CI. contract/validate.jq is what enforces it. Defaults filled in by contract/read.sh: node 24 (next, spa), go 1.27 (go), booleans false, go-dir '.', go-main ./cmd/<repo name>. The `dockerfile` output is the shared dockerfiles/<family>.Dockerfile in workspace-ci for next/spa/go; for custom it is the `dockerfile` value verbatim, a path relative to the build context.",
+  "description": "The per-repo build contract, .github/build.yml. Documentation, and the source for the reader's key list; it is not run in CI. contract/validate.jq is what enforces it. Defaults filled in by contract/read.sh: node 24 (next, spa), go 1.27 (go), booleans false, go-dir '.', go-main ./cmd/<repo name>. The `dockerfile` output is the shared dockerfiles/<family>.Dockerfile in workspace-ci for next/spa/go; for custom it is the `dockerfile` value verbatim, a path relative to the build context. For the shared families it is informational only (absolute on the runner that read it): app.yml and scripts/build-image compute their own Dockerfile path.",
   "type": "object",
   "additionalProperties": false,
   "required": ["family"],
@@ -14,12 +14,12 @@
     "prisma": { "type": "boolean", "description": "next or custom only" },
     "dotenvx": { "type": "boolean", "description": "next or custom only" },
     "integration": { "type": "boolean" },
-    "favicon": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+    "favicon": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Paths relative to the repository root (the checkout), NOT to `path`. An empty list means none." },
     "build-args": {
       "type": "object",
       "propertyNames": { "pattern": "^(NEXT_PUBLIC|VITE)_[A-Z0-9_]+$" },
-      "additionalProperties": { "type": "string", "pattern": "^[^\\n]*$" },
-      "description": "Public build args only (the non-secret rule)."
+      "additionalProperties": { "type": "string", "pattern": "^[^\\n\\r]*$" },
+      "description": "Public build args only (the non-secret rule). Not allowed with family go. Passed to next, spa and custom builds as one ARG, PUBLIC_BUILD_ENV_B64 (base64 of the K=V lines); a custom Dockerfile must declare and decode it."
     },
     "private-registry": { "type": "boolean" },
     "coolify-app": {
@@ -53,6 +53,10 @@
     {
       "if": { "properties": { "family": { "enum": ["next", "spa"] } }, "required": ["family"] },
       "then": { "not": { "required": ["go"] } }
+    },
+    {
+      "if": { "properties": { "family": { "const": "go" } }, "required": ["family"] },
+      "then": { "not": { "required": ["build-args"] } }
     }
   ]
 }

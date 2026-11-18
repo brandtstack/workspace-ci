@@ -145,6 +145,37 @@ class AppShape(unittest.TestCase):
         code = [l for l in TEXT.splitlines() if not l.lstrip().startswith("#")]
         self.assertFalse([l for l in code if "localhost" in l], "localhost dialled")
 
+    def test_dotenvx_smoke_bypasses_the_entrypoint(self):
+        smoke = [s for s in steps("image") if s.get("name") == "Boot and smoke test"][0]
+        self.assertEqual(smoke["env"]["FAMILY"], "${{ needs.verify.outputs.family }}")
+        self.assertEqual(smoke["env"]["DOTENVX"], "${{ needs.verify.outputs.dotenvx }}")
+        run = smoke["run"]
+        self.assertNotIn("${{", run)
+        self.assertIn('[ "$FAMILY" = next ] && [ "$DOTENVX" = true ]', run)
+        runs_ = [l.strip() for l in run.splitlines() if l.strip().startswith("docker run")]
+        self.assertEqual(len(runs_), 2)
+        bypass = [l for l in runs_ if "--entrypoint node" in l]
+        self.assertEqual(len(bypass), 1)
+        self.assertTrue(bypass[0].endswith("--entrypoint node ci-image:local server.js"), bypass[0])
+        plain = [l for l in runs_ if "--entrypoint" not in l][0]
+        self.assertTrue(plain.endswith("$SMOKE_ARGS ci-image:local"), plain)
+
+    def test_custom_gets_the_public_build_env(self):
+        b = find("image", "docker/build-push-action@")[0]["with"]["build-args"]
+        line = [l for l in b.splitlines() if "PUBLIC_BUILD_ENV_B64" in l and "format(" in l][0]
+        self.assertIn('["next","spa","custom"]', line)
+        node = [l for l in b.splitlines() if "format('NODE=" in l][0]
+        self.assertNotIn("custom", node)
+
+    def test_govulncheck_script_identical_to_go_ci(self):
+        # Until go-ci.yml is deleted, the two copies of the scan script must not drift.
+        with open(os.path.join(HERE, "..", "..", ".github", "workflows", "go-ci.yml")) as f:
+            go_ci = yaml.safe_load(f)
+        a = [s for s in go_ci["jobs"]["verify"]["steps"] if s.get("name") == "govulncheck"]
+        b = [s for s in steps("verify") if s.get("name") == "govulncheck"]
+        self.assertEqual((len(a), len(b)), (1, 1))
+        self.assertEqual(a[0]["run"], b[0]["run"])
+
     def test_internal_smoke_skips_go_images(self):
         internal = [s for s in steps("image") if "docker exec smoke" in s.get("run", "")]
         self.assertEqual(len(internal), 1)

@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Shared Next.js image, built by .github/workflows/app.yml. Contract: dockerfiles/README.md.
 # Stages: deps -> build -> runtime-base -> runtime-plain | runtime-dotenvx. The workflow picks the
 # last one with `target:`. No lint, test or typecheck here: `ci / verify` gates the commit.
@@ -31,12 +30,15 @@ RUN if [ "$PRISMA" = "true" ]; then npx prisma generate; fi \
 # Contract build args (NEXT_PUBLIC_*/VITE_*) arrive as one ARG: base64 of newline-separated K=V lines.
 # Public values only by contract, so the ARG showing in the build log is acceptable. read.sh restricts
 # the keys; each line is exported quoted, never eval'd.
+# `.env.production` (dotenvx: committed, encrypted) is removed before the build for every target: neither
+# its ciphertext nor a stray plaintext may be visible to `next build` or end up in the standalone output.
 RUN set -e; \
     if [ -n "$PUBLIC_BUILD_ENV_B64" ]; then \
       printf '%s' "$PUBLIC_BUILD_ENV_B64" | base64 -d > /tmp/public-build.env; \
       while IFS= read -r line || [ -n "$line" ]; do if [ -n "$line" ]; then export "$line"; fi; done < /tmp/public-build.env; \
       rm -f /tmp/public-build.env; \
     fi; \
+    rm -f .env.production; \
     npm run build
 
 FROM node:24.22.3-alpine AS runtime-base
@@ -54,10 +56,16 @@ CMD ["node", "server.js"]
 
 FROM runtime-base AS runtime-dotenvx
 COPY --from=docker.io/dotenv/dotenvx:v2.38.2 /usr/local/bin/dotenvx /usr/local/bin/dotenvx
-# The encrypted .env.production comes from the app repo; the wrapper from workspace-ci (named context `ws`).
+# The encrypted .env.production comes from the app repo (the build context, not the build stage, which
+# removed it); the wrapper and the check come from workspace-ci (named context `ws`).
 COPY --chown=node:node .env.production ./
 COPY --from=ws --chown=node:node --chmod=0755 next/dotenvx-entry.sh ./
-# Build gate: the CI smoke bypasses the ENTRYPOINT, so exercise the binary here.
+COPY --from=ws --chown=node:node --chmod=0755 next/check-env-encrypted.sh /tmp/check-env-encrypted.sh
+# Build gates: the file must hold no plaintext value (fails the build, prints names only), and the dotenvx
+# binary must run. The CI smoke does not go through the ENTRYPOINT: app.yml runs a dotenvx image with
+# `--entrypoint node ... server.js`, because the wrapper's `--strict` precheck needs the private key,
+# which CI never has.
+RUN sh /tmp/check-env-encrypted.sh .env.production && rm -f /tmp/check-env-encrypted.sh
 RUN /usr/local/bin/dotenvx --version >/dev/null
 ENTRYPOINT ["/bin/sh", "./dotenvx-entry.sh"]
 CMD ["node", "server.js"]

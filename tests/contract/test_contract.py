@@ -51,6 +51,7 @@ EXPECTED = {
         favicon="a.svg\nb.svg\nc.svg",
         **{"build-args": "VITE_A=1\nNEXT_PUBLIC_B=two words", "smoke-args": "line one\nline two\n"}),
     "ok-custom": base(family="custom", dockerfile="deploy/Dockerfile", node="24"),
+    "ok-favicon-empty": base(family="spa", dockerfile=dockerfile("spa"), node="24"),
 }
 
 

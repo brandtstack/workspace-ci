@@ -1,0 +1,6 @@
+family: next
+node: "24"
+dotenvx: true
+integration: false
+build-args:
+  NEXT_PUBLIC_FIXTURE: "1"

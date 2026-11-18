@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Shared Go image, built by .github/workflows/app.yml. Contract: dockerfiles/README.md.
 # GO is major.minor from the contract (e.g. 1.27); GO_MAIN the main package; GO_DIR the module dir.
 # No vet or tests here: `ci / verify` gates the commit.

@@ -6,6 +6,8 @@
 # Needs bash, curl, jq (1.7+), coreutils. No Python, no YAML parser: it downloads a pinned mikefarah/yq.
 # `dockerfile` output: next/spa/go -> absolute path of the shared Dockerfile in this repo's dockerfiles/;
 # custom -> the contract's value verbatim (a path relative to the build context).
+# For the shared families this output is informational only (absolute on the runner that read it, and the
+# image job runs on another): app.yml and scripts/build-image compute their own Dockerfile path.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

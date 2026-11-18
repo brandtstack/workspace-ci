@@ -56,11 +56,12 @@ def bools: ["prisma","dotenvx","integration","private-registry"];
       (("prisma","dotenvx") as $k | select(has($k) and ($fam == "spa" or $fam == "go")) | "\($k): only allowed with family next or custom"),
       # lists and maps
       (if has("favicon") then
-         (if ($c.favicon | type) != "array" or ($c.favicon | all(nonempty) | not) or ($c.favicon | length) == 0
-          then "favicon: must be a non-empty list of strings" else empty end)
+         (if ($c.favicon | type) != "array" or ($c.favicon | all(nonempty) | not)
+          then "favicon: must be a list of non-empty strings (an empty list means none)" else empty end)
        else empty end),
       (if has("build-args") then
-         (if ($c["build-args"] | type) != "object" then "build-args: must be a map of string to string"
+         (if $fam == "go" then "build-args: not allowed with family go (the go image takes no build args)"
+          elif ($c["build-args"] | type) != "object" then "build-args: must be a map of string to string"
           else ($c["build-args"] | to_entries[]
             | (if (.key | test("\\A(NEXT_PUBLIC|VITE)_[A-Z0-9_]+\\z") | not)
                  then "build-args: \(.key): name must match ^(NEXT_PUBLIC|VITE)_[A-Z0-9_]+$ (public values only, never secrets)"

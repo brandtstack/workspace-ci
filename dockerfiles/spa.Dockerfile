@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Shared SPA image (Vite etc.), built by .github/workflows/app.yml. Contract: dockerfiles/README.md.
 # No lint, test or typecheck here: `ci / verify` gates the commit.
 FROM node:24.22.3-alpine AS build

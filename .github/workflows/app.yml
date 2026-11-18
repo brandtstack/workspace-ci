@@ -19,7 +19,9 @@ name: app
 # job.workflow_sha is set without any id-token permission (run 44279773156), so callers grant nothing extra.
 # `smoke-args` is word-split into `docker run` flags (no spaces inside one argument) and is as trusted as
 # the caller's own CI code.
-# Not yet shown: a same-repo local call (uses: ./.github/workflows/app.yml); Task 7.4 asserts it.
+# A same-repo local call (uses: ./.github/workflows/app.yml) resolves to the run's own commit:
+# job.workflow_sha == github.sha (ci-launcher runs 44289692203 and 44286543151); the 'Check the workflow ref'
+# step asserts it on every run.
 
 on:
   workflow_call:
@@ -401,8 +403,9 @@ jobs:
           load: true
           tags: ci-image:local
           # Blank lines are dropped by the action. ARG names are the shared Dockerfiles' (Task 6).
+          # PUBLIC_BUILD_ENV_B64 also goes to `custom`: a custom Dockerfile declares and decodes it like next/spa (dockerfiles/README.md).
           build-args: |
-            ${{ contains(fromJSON('["next","spa"]'), needs.verify.outputs.family) && format('PUBLIC_BUILD_ENV_B64={0}', steps.bargs.outputs.b64) || '' }}
+            ${{ contains(fromJSON('["next","spa","custom"]'), needs.verify.outputs.family) && format('PUBLIC_BUILD_ENV_B64={0}', steps.bargs.outputs.b64) || '' }}
             ${{ contains(fromJSON('["next","spa"]'), needs.verify.outputs.family) && format('NODE={0}', needs.verify.outputs.node) || '' }}
             ${{ needs.verify.outputs.family == 'next' && format('PRISMA={0}', needs.verify.outputs.prisma) || '' }}
             ${{ needs.verify.outputs.family == 'go' && format('GO={0}', needs.verify.outputs.go) || '' }}
@@ -430,13 +433,22 @@ jobs:
       - name: Boot and smoke test
         env:
           SMOKE_ARGS: ${{ needs.verify.outputs.smoke-args }}
+          FAMILY: ${{ needs.verify.outputs.family }}
+          DOTENVX: ${{ needs.verify.outputs.dotenvx }}
         run: |
           set -euo pipefail
           # Unquoted on purpose: SMOKE_ARGS is word-split into docker run flags (globbing off), so no
           # argument may contain a space. It carries the same trust as the caller's own CI code.
           set -f
-          # shellcheck disable=SC2086
-          docker run -d --name smoke -p 8080:80 $SMOKE_ARGS ci-image:local
+          if [ "$FAMILY" = next ] && [ "$DOTENVX" = true ]; then
+            # A dotenvx image's ENTRYPOINT wrapper needs the private key, which CI never has, so the smoke
+            # bypasses it and starts the server directly (built in, not a contract field).
+            # shellcheck disable=SC2086
+            docker run -d --name smoke -p 8080:80 $SMOKE_ARGS --entrypoint node ci-image:local server.js
+          else
+            # shellcheck disable=SC2086
+            docker run -d --name smoke -p 8080:80 $SMOKE_ARGS ci-image:local
+          fi
           ok=0
           for _ in $(seq 1 30); do
             if curl -fsS "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then ok=1; break; fi

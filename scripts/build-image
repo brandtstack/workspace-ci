@@ -94,9 +94,9 @@ if [ "$FAMILY" = next ]; then
   if [ "$C_dotenvx" = true ]; then ARGS+=(--target runtime-dotenvx); else ARGS+=(--target runtime-plain); fi
 fi
 case "$FAMILY" in
-  next|spa)
+  next|spa|custom)
     B64="$(printf '%s' "$C_build_args" | base64 | tr -d '\n')"
-    ARGS+=(--build-arg "NODE=$C_node")
+    [ "$FAMILY" = custom ] || ARGS+=(--build-arg "NODE=$C_node")
     [ "$FAMILY" = next ] && ARGS+=(--build-arg "PRISMA=$C_prisma")
     ARGS+=(--build-arg "PUBLIC_BUILD_ENV_B64=$B64") ;;
   go) ARGS+=(--build-arg "GO=$C_go" --build-arg "GO_MAIN=$C_go_main" --build-arg "GO_DIR=$C_go_dir") ;;
@@ -117,8 +117,16 @@ trap cleanup EXIT
 # smoke-args is word-split into flags, globbing off (same trust and same rule as app.yml: no spaces inside one flag)
 set -f
 # shellcheck disable=SC2086
-CID="$(podman run -d --sysctl net.ipv4.ip_unprivileged_port_start=0 -p "127.0.0.1:$PORT:80" $C_smoke_args "$TAG")" \
-  || die "podman run failed"
+RUN=(podman run -d --sysctl net.ipv4.ip_unprivileged_port_start=0 -p "127.0.0.1:$PORT:80")
+# shellcheck disable=SC2206
+RUN+=($C_smoke_args)
+if [ "$FAMILY" = next ] && [ "$C_dotenvx" = true ]; then
+  # As app.yml: the dotenvx ENTRYPOINT wrapper needs the private key, so the smoke starts the server directly.
+  RUN+=(--entrypoint node "$TAG" server.js)
+else
+  RUN+=("$TAG")
+fi
+CID="$("${RUN[@]}")" || die "podman run failed"
 set +f
 
 ok=0
