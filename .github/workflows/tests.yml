@@ -104,7 +104,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        family: [next, next-dotenvx, spa, go]
+        family: [next, next-dotenvx, next-multischema, spa, go]
     permissions:
       contents: read
       packages: write

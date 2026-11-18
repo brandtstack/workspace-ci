@@ -207,6 +207,19 @@ class ContractTests(unittest.TestCase):
         o = parse_output(written)
         self.assertEqual((o["smoke-env-b64"], o["smoke-postgres"], o["smoke-random"]), ("", "", ""))
 
+    def test_every_fixture_has_a_valid_contract_and_a_matrix_row(self):
+        fx = os.path.join(ROOT, "fixtures")
+        names = sorted(n for n in os.listdir(fx) if os.path.isdir(os.path.join(fx, n)) and n != "bad-contract")
+        for n in names:
+            with self.subTest(fixture=n):
+                p, _ = run(os.path.join(fx, n, ".github", "build.yml"), self.cache)
+                self.assertEqual(p.returncode, 0, p.stderr)
+        with open(os.path.join(ROOT, ".github", "workflows", "tests.yml")) as f:
+            text = f.read()
+        m = re.search(r"family: \[([^\]]*)\]", text)
+        self.assertTrue(m, "fixture matrix not found in tests.yml")
+        self.assertEqual(sorted(x.strip() for x in m.group(1).split(",")), names)
+
     def test_yq_checksum_mismatch(self):
         tc = tempfile.mkdtemp()
         try:
