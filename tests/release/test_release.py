@@ -334,17 +334,42 @@ def rows(port):
     add("no Coolify step reads the coolify-app-uuid input directly (only the target step does)",
         raw.count("inputs.coolify-app-uuid") == 1, str(raw.count("inputs.coolify-app-uuid")))
 
+    # The step list is the legacy path too: custom support adds no step and removes none.
+    # (the two "" are the checkout and login-action steps, which have `uses` and no name)
+    add("step list unchanged by custom support (legacy path included)", names == [
+        "", "Require the workflow's own ref",
+        "Check out workspace-ci at its own ref", "Move workspace-ci out of the workspace", "Read the build contract",
+        "Resolve the Coolify target", "Skip if this commit is already version-tagged", "Derive version from the squash commit title",
+        "Resolve the version to release", "Resolve the PR head SHA this merge came from", "Sync Coolify from build.yml", "",
+        "Promote the tested image to ${{ steps.ver.outputs.version }}", "Push git tag", "Write the Release state helper",
+        "Set APP_VERSION on the Coolify application", "Point the Coolify application at ${{ steps.v.outputs.version }}", "Deploy",
+        "Create the GitHub Release", "Wait for the deployment and mark the Release", "Mark a Release whose deploy never started"],
+        " | ".join(names))
+    add("target step reads the contract's node and go; sync reads the target's toolchain",
+        steps["Resolve the Coolify target"]["env"].get("NODE") == "${{ steps.contract.outputs.node }}"
+        and steps["Resolve the Coolify target"]["env"].get("GO") == "${{ steps.contract.outputs.go }}"
+        and steps["Sync Coolify from build.yml"]["env"].get("TOOLCHAIN") == "${{ steps.target.outputs.toolchain }}", "")
+
     T = "Resolve the Coolify target"
     r = run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "legacy-1", "APPS": "", "FAMILY": ""})
     add("target legacy: the input, unchanged", r["rc"] == 0 and "uuid=legacy-1" in r["output"], r["out"] + r["output"])
     r = run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "", "APPS": "", "FAMILY": ""})
     add("target legacy without uuid: empty (tag-only caller)", r["rc"] == 0 and "uuid=\n" in r["output"], r["output"])
-    r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa"})
+    r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa", "NODE": "24", "GO": ""})
     add("target contract: build.yml's app and family", r["rc"] == 0 and "uuid=winnfosay9q4zcm1iisu2rgm" in r["output"] and "family=spa" in r["output"], r["out"] + r["output"])
+    add("target legacy writes no toolchain", "toolchain" not in run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "x", "APPS": "", "FAMILY": ""})["output"], "")
+    # family table: (family, contract node, contract go) -> toolchain. next/spa carry node, go carries go,
+    # custom takes whichever of the two the contract names (validate.jq allows exactly one).
+    for fam, node, go, want in (("next", "24", "", "node"), ("spa", "24", "", "node"), ("go", "", "1.27", "go"),
+                                ("custom", "24", "", "node"), ("custom", "", "1.27", "go")):
+        r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": fam, "NODE": node, "GO": go})
+        add("target contract: %s with node=%r go=%r -> toolchain=%s" % (fam, node, go, want),
+            r["rc"] == 0 and ("toolchain=%s\n" % want) in r["output"] and ("family=%s\n" % fam) in r["output"], r["out"] + r["output"])
     for label, env in (("input also set", {"INPUT_UUID": "x", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa"}),
                        ("two apps", {"INPUT_UUID": "", "APPS": "a\nb", "FAMILY": "next"}),
                        ("no app", {"INPUT_UUID": "", "APPS": "", "FAMILY": "go"}),
-                       ("custom family", {"INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "custom"}),
+                       ("custom with neither node nor go", {"INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "custom", "NODE": "", "GO": ""}),
+                       ("unknown family", {"INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "nope", "NODE": "24"}),
                        ("path-shaped app", {"INPUT_UUID": "", "APPS": "../servers/abcdefgh", "FAMILY": "spa"}),
                        ("query-shaped app", {"INPUT_UUID": "", "APPS": "abcdefgh1234&force=true", "FAMILY": "spa"})):
         r = run(port, T, env=dict(env, CONTRACT="true"))
@@ -378,8 +403,25 @@ def rows(port):
     add("sync read-back unreadable: fails", r["rc"] != 0 and "could not read the app back" in r["out"], r["out"])
     r = run(port, S, env={"FAMILY": "next", "BEARER": ""})
     add("sync without secrets: fails before any call", r["rc"] != 0 and not Stub.patches, r["out"])
-    r = run(port, S, env={"FAMILY": "custom"})
-    add("sync unknown family: fails before any call", r["rc"] != 0 and not Stub.patches, r["out"])
+    # custom takes its toolchain's settings (spec C4): node -> the next/spa check, go -> check off.
+    r = run(port, S, env={"FAMILY": "custom", "TOOLCHAIN": "node"})
+    p = Stub.patches[0] if Stub.patches else {}
+    add("sync custom + node: port 80 and the full http check, same as next",
+        r["rc"] == 0 and len(Stub.patches) == 1 and p.get("ports_exposes") == "80" and p.get("health_check_enabled") is True
+        and p.get("health_check_path") == "/healthz" and p.get("health_check_host") == "127.0.0.1"
+        and p.get("health_check_port") == "80", r["out"] + json.dumps(Stub.patches))
+    r = run(port, S, env={"FAMILY": "custom", "TOOLCHAIN": "go"})
+    add("sync custom + go: port 80, Coolify check OFF, no http fields sent",
+        r["rc"] == 0 and Stub.patches == [{"ports_exposes": "80", "health_check_enabled": False}], r["out"] + json.dumps(Stub.patches))
+    r = run(port, S, env={"FAMILY": "next", "TOOLCHAIN": "node"})
+    nx = list(Stub.patches)
+    r = run(port, S, env={"FAMILY": "custom", "TOOLCHAIN": "node"})
+    add("sync custom + node sends exactly the body next sends", Stub.patches == nx and nx, json.dumps(Stub.patches))
+    for label, env in (("custom with no toolchain", {"FAMILY": "custom", "TOOLCHAIN": ""}),
+                       ("custom with an unknown toolchain", {"FAMILY": "custom", "TOOLCHAIN": "ruby"}),
+                       ("unknown family", {"FAMILY": "nope", "TOOLCHAIN": "node"})):
+        r = run(port, S, env=env)
+        add("sync %s: fails before any call" % label, r["rc"] != 0 and not Stub.patches, r["out"])
 
     r = run(port, "Deploy", script={"deploy": {"deployments": [{"message": "queued"}]}})
     add("missing-uuid: Deploy fails, but records that it queued", r["rc"] != 0 and "queued=true" in r["output"], r["out"] + r["output"])
