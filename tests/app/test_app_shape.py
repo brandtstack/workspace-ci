@@ -177,9 +177,20 @@ class AppShape(unittest.TestCase):
         self.assertEqual(a[0]["run"], b[0]["run"])
 
     def test_internal_smoke_skips_go_images(self):
-        internal = [s for s in steps("image") if "docker exec smoke" in s.get("run", "")]
-        self.assertEqual(len(internal), 1)
-        self.assertIn("needs.verify.outputs.node", internal[0]["if"])
+        # wget runs only in node images; go images exec their own healthcheck subcommand instead.
+        wget = [s for s in steps("image") if "docker exec smoke wget" in s.get("run", "")]
+        self.assertEqual(len(wget), 1)
+        self.assertIn("needs.verify.outputs.node", wget[0]["if"])
+
+    def test_go_smoke_runs_healthcheck_and_waits_for_healthy(self):
+        go = [s for s in steps("image") if "docker exec smoke /app healthcheck" in s.get("run", "")]
+        self.assertEqual(len(go), 1)
+        self.assertEqual(go[0]["if"], "needs.verify.outputs.family == 'go'")
+        self.assertIn(".State.Health.Status", go[0]["run"])
+        names = [s.get("name", "") for s in steps("image")]
+        # After the boot step (the container exists), before the teardown.
+        self.assertLess(names.index("Boot and smoke test"), names.index(go[0]["name"]))
+        self.assertLess(names.index(go[0]["name"]), names.index("Tear down"))
 
     def test_publish_guard(self):
         pub = [s for s in steps("image") if s.get("uses", "").startswith("docker/login-action@")
