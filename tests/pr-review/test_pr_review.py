@@ -239,7 +239,8 @@ def rows(port, dead_port, tmp):
                                                      if re.search(r"(^|\|\s*)\s*gh ", l)))
     with open(TESTS_WORKFLOW) as f:
         tw = yaml.safe_load(f)
-    jobs = tw["jobs"].values()
+    # `uses:` jobs (the fixtures matrix calling app.yml) have no steps and no runs-on; app.yml pins its own.
+    jobs = [j for j in tw["jobs"].values() if "steps" in j]
     add("static: tests job runs GitHub-hosted, never the Acer",
         all(j.get("runs-on") == "ubuntu-latest" for j in jobs), json.dumps([j.get("runs-on") for j in jobs]))
     tests_run = "\n".join(s.get("run", "") for j in jobs for s in j["steps"])
