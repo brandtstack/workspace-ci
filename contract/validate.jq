@@ -6,7 +6,7 @@
 def isbool: type == "boolean";
 def isstr: type == "string";
 def nonempty: isstr and length > 0;
-def badpath: isstr and (startswith("/") or test("(^|/)\\.\\.(/|$)"));
+def badpath: isstr and (startswith("/") or test("(\\A|/)\\.\\.(/|\\z)"));
 
 def keys_allowed: ["family","dockerfile","node","go","prisma","dotenvx","integration",
   "favicon","build-args","private-registry","coolify-app","smoke-args","go-main","go-dir"];
@@ -17,7 +17,7 @@ def bools: ["prisma","dotenvx","integration","private-registry"];
   elif ($c | type) != "object" then {errors: ["<root>: top level must be a map of keys"]}
   else
     ($c.family // null) as $fam
-    | (["next","spa","go","custom"] | index($fam))  as $famok
+    | (if ($fam | type) == "string" then ["next","spa","go","custom"] | index($fam) else null end) as $famok
     # (input `.` stays the whole document, so has("k") below tests top-level keys)
     | ([
       # unknown keys
@@ -25,7 +25,7 @@ def bools: ["prisma","dotenvx","integration","private-registry"];
         | "\(.): unknown key"),
       # family
       (if (has("family") | not) then "family: required"
-       elif $famok == null then "family: must be one of next, spa, go, custom"
+       elif $famok == null then "family: must be one of next, spa, go, custom (a plain string)"
        else empty end),
       # dockerfile
       (if has("dockerfile") then
@@ -39,12 +39,12 @@ def bools: ["prisma","dotenvx","integration","private-registry"];
        else empty end),
       # node / go
       (if has("node") then
-         (if (($c.node | type) == "string" or ($c.node | type) == "number") and ($c.node | tostring) == "24" then empty
+         (if $c.node == "24" or (($c.node | type) == "number" and ($c.node | tojson) == "24") then empty
           else "node: must be \"24\"" end)
        else empty end),
       (if has("go") then
-         (if (($c.go | type) == "string" or ($c.go | type) == "number") and (($c.go | tostring) | test("^1\\.[0-9]+$")) then empty
-          else "go: must match 1.N (quote it, e.g. \"1.27\")" end)
+         (if ($c.go | type) == "string" and ($c.go | test("\\A1\\.[0-9]+\\z")) then empty
+          else "go: must be a quoted string like \"1.27\" (an unquoted 1.30 would be read as 1.3)" end)
        else empty end),
       (if has("node") and $famok != null and $fam == "go" then "node: not allowed with family go" else empty end),
       (if has("go") and ($fam == "next" or $fam == "spa") then "go: only allowed with family go or custom" else empty end),
@@ -62,7 +62,7 @@ def bools: ["prisma","dotenvx","integration","private-registry"];
       (if has("build-args") then
          (if ($c["build-args"] | type) != "object" then "build-args: must be a map of string to string"
           else ($c["build-args"] | to_entries[]
-            | (if (.key | test("^(NEXT_PUBLIC|VITE)_[A-Z0-9_]+$") | not)
+            | (if (.key | test("\\A(NEXT_PUBLIC|VITE)_[A-Z0-9_]+\\z") | not)
                  then "build-args: \(.key): name must match ^(NEXT_PUBLIC|VITE)_[A-Z0-9_]+$ (public values only, never secrets)"
                elif (.value | isstr | not) or (.value | test("\n")) then "build-args: \(.key): value must be a single-line string"
                else empty end))

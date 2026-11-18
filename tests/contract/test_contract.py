@@ -46,6 +46,10 @@ EXPECTED = {
     "ok-go-subdir": base(
         family="go", dockerfile=dockerfile("go"), go="1.27",
         **{"coolify-app": "usage.example.test", "go-main": "./cmd/usage-server", "go-dir": "server"}),
+    "ok-multiline": base(
+        family="next", dockerfile=dockerfile("next"), node="24",
+        favicon="a.svg\nb.svg\nc.svg",
+        **{"build-args": "VITE_A=1\nNEXT_PUBLIC_B=two words", "smoke-args": "line one\nline two\n"}),
     "ok-custom": base(family="custom", dockerfile="deploy/Dockerfile", node="24"),
 }
 
@@ -165,6 +169,21 @@ class ContractTests(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
+    def test_key_lists_agree(self):
+        import json
+        with open(os.path.join(ROOT, "contract", "schema.json")) as f:
+            schema_keys = set(json.load(f)["properties"])
+        with open(os.path.join(ROOT, "contract", "validate.jq")) as f:
+            jq = f.read()
+        block = jq.split("def keys_allowed:")[1].split("];")[0]
+        allowed = set(re.findall(r'"([a-z-]+)"', block))
+        with open(READ) as f:
+            rd = f.read()
+        block = rd.split("KEYS='[")[1].split("]'")[0]
+        out_keys = set(re.findall(r'"([a-z-]+)"', block))
+        self.assertEqual(allowed, schema_keys)
+        self.assertEqual(out_keys, schema_keys)
+
     def test_yq_checksum_mismatch(self):
         tc = tempfile.mkdtemp()
         try:
@@ -179,6 +198,7 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(p.returncode, 1)
             self.assertIn("::error::", p.stderr)
             self.assertIn("checksum", p.stderr)
+            self.assertIn("delete " + fake, p.stderr)
             self.assertFalse(os.path.exists(marker), "tampered yq was executed")
             self.assertEqual(written, "")
         finally:
