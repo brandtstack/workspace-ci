@@ -355,6 +355,9 @@ jobs:
           # next/spa/go: the shared Dockerfile in this job's own workspace-ci copy; custom: <path>/<dockerfile>.
           file: ${{ needs.verify.outputs.family == 'custom' && format('{0}/{1}', inputs.path, needs.verify.outputs.dockerfile) || format('{0}/ws-ci/dockerfiles/{1}.Dockerfile', runner.temp, needs.verify.outputs.family) }}
           target: ${{ needs.verify.outputs.family == 'next' && (needs.verify.outputs.dotenvx == 'true' && 'runtime-dotenvx' || 'runtime-plain') || '' }}
+          # Named context `ws`: the shared Dockerfiles COPY their helper files (nginx/, next/) from workspace-ci
+          # with `COPY --from=ws`, because the build context is the app repo.
+          build-contexts: ws=${{ runner.temp }}/ws-ci/dockerfiles
           load: true
           tags: ci-image:local
           # Blank lines are dropped by the action. ARG names are the shared Dockerfiles' (Task 6).

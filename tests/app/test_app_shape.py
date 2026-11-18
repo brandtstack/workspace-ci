@@ -113,6 +113,7 @@ class AppShape(unittest.TestCase):
             self.assertIn(arg, w["build-args"])
         for a in ("PRISMA=", "GO_MAIN=", "GO_DIR="):
             self.assertIn(a, w["build-args"])
+        self.assertEqual(w["build-contexts"], "ws=${{ runner.temp }}/ws-ci/dockerfiles")
         self.assertIn("runtime-dotenvx", w["target"])
         self.assertIn("runtime-plain", w["target"])
 
