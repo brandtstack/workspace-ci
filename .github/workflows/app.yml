@@ -343,6 +343,16 @@ jobs:
           # branch tip. The release workflow looks the image up by head SHA.
           echo "head=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
 
+      # The contract's NEXT_PUBLIC_* / VITE_* names are arbitrary, so a shared Dockerfile cannot declare them.
+      # They travel as ONE declared ARG, base64 of the K=V lines (public values only, by contract).
+      - name: Encode contract build args
+        id: bargs
+        env:
+          BUILD_ARGS: ${{ needs.verify.outputs.build-args }}
+        run: |
+          set -euo pipefail
+          echo "b64=$(printf '%s' "$BUILD_ARGS" | base64 -w0)" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Build production image
@@ -362,7 +372,7 @@ jobs:
           tags: ci-image:local
           # Blank lines are dropped by the action. ARG names are the shared Dockerfiles' (Task 6).
           build-args: |
-            ${{ needs.verify.outputs.build-args }}
+            ${{ contains(fromJSON('["next","spa"]'), needs.verify.outputs.family) && format('PUBLIC_BUILD_ENV_B64={0}', steps.bargs.outputs.b64) || '' }}
             ${{ contains(fromJSON('["next","spa"]'), needs.verify.outputs.family) && format('NODE={0}', needs.verify.outputs.node) || '' }}
             ${{ needs.verify.outputs.family == 'next' && format('PRISMA={0}', needs.verify.outputs.prisma) || '' }}
             ${{ needs.verify.outputs.family == 'go' && format('GO={0}', needs.verify.outputs.go) || '' }}

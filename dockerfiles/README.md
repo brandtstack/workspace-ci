@@ -7,6 +7,13 @@ here (`next/`, `nginx/`) reach the build through the BuildKit named context `ws`
 No image runs lint, test or typecheck: `ci / verify` gates the commit. The registry token is the
 BuildKit secret `npm_token` (never an ARG); it is optional.
 
+## Contract build-args
+
+`build-args` (`NEXT_PUBLIC_*` / `VITE_*`, public values only) travel as one ARG,
+`PUBLIC_BUILD_ENV_B64`: base64 of the newline-joined `K=V` lines, set by the workflow. The next and
+spa build stages decode it and `export` each line before `npm run build`. The go family ignores it.
+Being an ARG, the value shows in the build log; never put a secret there.
+
 ## next (`next.Dockerfile`)
 
 Target `runtime-plain` or `runtime-dotenvx` (the workflow picks it from the contract's `dotenvx`).
@@ -40,7 +47,5 @@ Build args `GO` (major.minor, e.g. `1.27`), `GO_MAIN` (main package, e.g. `./cmd
 ## Not supported yet (step 3 extends the files if a pilot needs it)
 
 - Prisma `prisma-client-js` (client inside `node_modules`); only the `generated/prisma` layout works.
-- `NEXT_PUBLIC_*` / `VITE_*` contract build-args only reach the build once the Dockerfile declares
-  them as ARGs (see the open question in the Task 6 report).
 - spa: `/docker-entrypoint.d/*.sh` scripts run as `nginx` and cannot write under `/etc/nginx`.
 - go: a `healthcheck` subcommand and image `HEALTHCHECK`, only if Coolify needs a tool in the image.

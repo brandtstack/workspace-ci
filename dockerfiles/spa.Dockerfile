@@ -12,8 +12,19 @@ COPY package.json package-lock.json .npmrc ./
 RUN --mount=type=secret,id=npm_token \
     if [ -f /run/secrets/npm_token ]; then NPM_TOKEN="$(cat /run/secrets/npm_token)"; export NPM_TOKEN; fi; \
     npm ci
+ARG PUBLIC_BUILD_ENV_B64=""
 COPY . .
-RUN npm run build && mkdir -p nginx
+# Contract build args (NEXT_PUBLIC_*/VITE_*) arrive as one ARG: base64 of newline-separated K=V lines.
+# Public values only by contract, so the ARG showing in the build log is acceptable. read.sh restricts
+# the keys; each line is exported quoted, never eval'd.
+RUN set -e; \
+    if [ -n "$PUBLIC_BUILD_ENV_B64" ]; then \
+      printf '%s' "$PUBLIC_BUILD_ENV_B64" | base64 -d > /tmp/public-build.env; \
+      while IFS= read -r line || [ -n "$line" ]; do if [ -n "$line" ]; then export "$line"; fi; done < /tmp/public-build.env; \
+      rm -f /tmp/public-build.env; \
+    fi; \
+    npm run build \
+ && mkdir -p nginx
 
 FROM nginx:1.31.8-alpine
 # Non-root: the main-context nginx.conf has no `user` directive and keeps pid and temp paths in /tmp.

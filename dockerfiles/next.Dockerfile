@@ -19,6 +19,7 @@ RUN --mount=type=secret,id=npm_token \
 
 FROM node:24.22.3-alpine AS build
 ARG PRISMA=false
+ARG PUBLIC_BUILD_ENV_B64=""
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN apk add --no-cache libc6-compat ca-certificates
@@ -27,7 +28,16 @@ COPY . .
 # Prisma layout: generator `prisma-client` with output "../generated/prisma" (see README).
 RUN if [ "$PRISMA" = "true" ]; then npx prisma generate; fi \
  && mkdir -p generated public
-RUN npm run build
+# Contract build args (NEXT_PUBLIC_*/VITE_*) arrive as one ARG: base64 of newline-separated K=V lines.
+# Public values only by contract, so the ARG showing in the build log is acceptable. read.sh restricts
+# the keys; each line is exported quoted, never eval'd.
+RUN set -e; \
+    if [ -n "$PUBLIC_BUILD_ENV_B64" ]; then \
+      printf '%s' "$PUBLIC_BUILD_ENV_B64" | base64 -d > /tmp/public-build.env; \
+      while IFS= read -r line || [ -n "$line" ]; do if [ -n "$line" ]; then export "$line"; fi; done < /tmp/public-build.env; \
+      rm -f /tmp/public-build.env; \
+    fi; \
+    npm run build
 
 FROM node:24.22.3-alpine AS runtime-base
 WORKDIR /app
