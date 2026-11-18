@@ -23,15 +23,16 @@ RUN set -e; \
       while IFS= read -r line || [ -n "$line" ]; do if [ -n "$line" ]; then export "$line"; fi; done < /tmp/public-build.env; \
       rm -f /tmp/public-build.env; \
     fi; \
-    npm run build \
- && mkdir -p nginx
+    mkdir -p nginx; \
+    npm run build
 
 FROM nginx:1.31.8-alpine
 # Non-root: the main-context nginx.conf has no `user` directive and keeps pid and temp paths in /tmp.
 COPY --from=ws nginx/nginx.conf /etc/nginx/nginx.conf
-COPY --from=ws nginx/healthz.conf /etc/nginx/snippets/healthz.conf
 COPY --from=build /app/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/nginx/ /etc/nginx/snippets/
+# After the app's nginx/ dir, so the shared healthz.conf always wins over an app file of that name.
+COPY --from=ws nginx/healthz.conf /etc/nginx/snippets/healthz.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 RUN chown -R nginx:nginx /var/cache/nginx
 USER nginx

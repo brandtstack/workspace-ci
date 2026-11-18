@@ -64,7 +64,7 @@ def bools: ["prisma","dotenvx","integration","private-registry"];
           else ($c["build-args"] | to_entries[]
             | (if (.key | test("\\A(NEXT_PUBLIC|VITE)_[A-Z0-9_]+\\z") | not)
                  then "build-args: \(.key): name must match ^(NEXT_PUBLIC|VITE)_[A-Z0-9_]+$ (public values only, never secrets)"
-               elif (.value | isstr | not) or (.value | test("\n")) then "build-args: \(.key): value must be a single-line string"
+               elif (.value | isstr | not) or (.value | test("[\n\r]")) then "build-args: \(.key): value must be a single-line string"
                else empty end))
           end)
        else empty end),

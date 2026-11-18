@@ -35,7 +35,7 @@ Build arg `NODE`. `npm run build` must produce `dist/`. nginx 1.31.8, user `ngin
 
 The repo must provide `nginx.conf` (a `server` block, copied to `conf.d/default.conf`) with
 `listen 80;` and `include /etc/nginx/snippets/healthz.conf;`. An optional `nginx/` directory is
-copied to `/etc/nginx/snippets/`. The shipped main `nginx.conf` has no `user` directive and keeps the
+copied to `/etc/nginx/snippets/`, but the shared `healthz.conf` is copied after it and always wins over an app file of that name. The shipped main `nginx.conf` has no `user` directive and keeps the
 pid and temp files in `/tmp`; binding 80 as non-root relies on `ip_unprivileged_port_start=0`.
 
 ## go (`go.Dockerfile`)
