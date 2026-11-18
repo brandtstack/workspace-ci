@@ -243,6 +243,10 @@ def rows(port, dead_port, tmp):
     jobs = [j for j in tw["jobs"].values() if "steps" in j]
     add("static: tests job runs GitHub-hosted, never the Acer",
         all(j.get("runs-on") == "ubuntu-latest" for j in jobs), json.dumps([j.get("runs-on") for j in jobs]))
+    fx = tw["jobs"].get("fixtures", {})
+    add("static: fixtures job calls app.yml on GitHub-hosted ubuntu-latest, never the Acer",
+        fx.get("uses") == "./.github/workflows/app.yml" and fx.get("with", {}).get("runner") == '"ubuntu-latest"',
+        json.dumps(fx))
     tests_run = "\n".join(s.get("run", "") for j in jobs for s in j["steps"])
     add("static: tests job pins PyYAML exactly", re.search(r"PyYAML==\d+\.\d+\.\d+", tests_run))
     add("static: tests job uses sha-pinned actions only",

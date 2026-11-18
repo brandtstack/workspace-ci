@@ -1,6 +1,6 @@
 import { fixtureValue } from '../src/fixture';
 
-// Rendered on request: the value must come from the build (NEXT_PUBLIC_* is inlined), not the runtime env.
+// Statically prerendered at build: NEXT_PUBLIC_* is inlined then, so this page proves the build-arg reached the build (a runtime env var could not change it).
 export default function Page() {
   return (
     <main>

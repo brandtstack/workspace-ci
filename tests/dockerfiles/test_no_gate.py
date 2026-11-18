@@ -9,8 +9,8 @@ import unittest
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 GATE = re.compile(
-    r"npm\s+(?:run\s+)?(?:verify|test|lint|typecheck)\b|npm\s+t\b|\bvitest\b|\beslint\b|\btsc\b"
-    r"|\bgo\s+(?:test|vet)\b|\bmake\s+verify\b"
+    r"\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:verify|test|lint|typecheck)\b|\bnpm\s+t\b|\bvitest\b|\beslint\b|\btsc\b"
+    r"|\bgo\s+(?:-C\s+\S+\s+)?(?:test|vet)\b|\bmake\s+verify\b"
 )
 
 
@@ -29,9 +29,10 @@ class NoGate(unittest.TestCase):
 
     def test_pattern_catches_what_it_names(self):
         for bad in ("RUN npm run verify", "RUN npm test", "RUN npm run lint", "RUN npm run typecheck", "RUN npx vitest run",
-                    "RUN npx eslint .", "RUN npx tsc --noEmit", "RUN go test ./...", "RUN go vet ./...", "RUN make verify"):
+                    "RUN npx eslint .", "RUN npx tsc --noEmit", "RUN go test ./...", "RUN go vet ./...", "RUN pnpm test", "RUN pnpm run lint", "RUN yarn typecheck",
+                    "RUN yarn run verify", "RUN go -C server test ./...", "RUN go -C server vet ./...", "RUN make verify"):
             self.assertIsNotNone(GATE.search(bad), bad)
-        for ok in ("RUN npm run build", "RUN npm ci", "RUN go build ./...", "RUN npx prisma generate"):
+        for ok in ("RUN npm run build", "RUN npm ci", "RUN go build ./...", "RUN pnpm install", "RUN yarn build", "RUN go -C server build ./...", "RUN npx prisma generate"):
             self.assertIsNone(GATE.search(ok), ok)
 
 

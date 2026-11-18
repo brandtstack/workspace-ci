@@ -8,11 +8,14 @@ html="$(curl -fsS "$base/")"
 js="$(printf '%s' "$html" | grep -o 'src="/assets/[^"]*\.js"' | head -1 | sed 's/^src="//; s/"$//')"
 [ -n "$js" ] || { echo "fixture-check: no /assets/*.js script in /" >&2; exit 1; }
 bundle="$(curl -fsS "$base$js")"
-# Vite inlines import.meta.env.VITE_FIXTURE as a string literal passed to fixtureValue(); the quote
-# character depends on the minifier, hence [^a-z]. An unset arg would leave no literal here.
-if printf '%s' "$bundle" | grep -Eq 'id:[^a-z]fixture[^a-z],children:[A-Za-z_$]+\([^a-z]1[^a-z]\)'; then
+# Vite inlines import.meta.env.VITE_FIXTURE as a string literal ("1") next to the element id "fixture".
+# The quote character and the exact shape depend on the minifier, so accept a quoted 1 within a short
+# window of the fixture id, in either order. If VITE_FIXTURE never reached the build, no literal 1 is there.
+q='["'"'"'`]'
+if printf '%s' "$bundle" | grep -Eq "fixture${q}.{0,40}${q}1${q}|${q}1${q}.{0,40}fixture${q}"; then
   echo "fixture-check: build-arg VITE_FIXTURE=1 inlined in $js"
 else
-  echo "fixture-check: VITE_FIXTURE=1 not found in $js" >&2
+  echo "fixture-check: this check looks for the value of VITE_FIXTURE (1) in the built bundle $js, next to the id 'fixture'; not found." >&2
+  echo "fixture-check: either the build-arg did not reach the build, or a Vite/minifier update changed the output shape (then fix this regex)." >&2
   exit 1
 fi
