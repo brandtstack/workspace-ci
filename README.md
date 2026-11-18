@@ -344,6 +344,10 @@ jobs:
       runner: '["self-hosted","priv-ci"]'
 ```
 
+Repo-specific image probes do not carry over: tilde's required `headers` job builds the repo's own
+Dockerfile, so on adoption it must move to pulling `:sha-<head>` after `ci / image` instead (spec step 3
+handles it).
+
 ### Building it locally
 
 `scripts/build-image [--no-verify] [--no-smoke] [<repo dir>]` builds what the `image` job builds, with

@@ -11,7 +11,10 @@ BuildKit secret `npm_token` (never an ARG); it is optional.
 
 `build-args` (`NEXT_PUBLIC_*` / `VITE_*`, public values only) travel as one ARG,
 `PUBLIC_BUILD_ENV_B64`: base64 of the newline-joined `K=V` lines, set by the workflow. The next and
-spa build stages decode it and `export` each line before `npm run build`. The go family ignores it.
+spa build stages decode it and `export` each line before `npm run build`. The go family takes no
+`build-args` (the contract rejects them). A `custom` build gets the same ARG too: a custom Dockerfile
+must declare `ARG PUBLIC_BUILD_ENV_B64` and decode it the way next/spa do (`printf '%s' "$ARG" | base64 -d`,
+then `export` each `K=V` line before the build), or its `build-args` have no effect.
 Being an ARG, the value shows in the build log; never put a secret there.
 
 ## next (`next.Dockerfile`)
@@ -25,7 +28,11 @@ The repo must provide:
 - `output: 'standalone'` in `next.config`, and a `/healthz` route.
 - `public/` is optional (the build creates an empty one).
 - With `dotenvx`: a committed, encrypted `.env.production`. The wrapper `next/dotenvx-entry.sh` and
-  the dotenvx binary come from this repo.
+  the dotenvx binary come from this repo. The build removes `.env.production` before `next build`
+  (every target), and the `runtime-dotenvx` stage runs `next/check-env-encrypted.sh` on the copy it
+  ships, failing the build if any value is plaintext. The wrapper's `--strict` precheck needs the private
+  key, which CI never has, so the CI smoke (app.yml and `scripts/build-image`) starts a dotenvx image with
+  `--entrypoint node ... server.js` instead of the wrapper.
 - With `prisma: true`: generator `prisma-client` with `output = "../generated/prisma"`, so the client
   lands in `/app/generated`, which the runtime copies (empty without Prisma).
 
@@ -47,5 +54,10 @@ Build args `GO` (major.minor, e.g. `1.27`), `GO_MAIN` (main package, e.g. `./cmd
 ## Not supported yet (step 3 extends the files if a pilot needs it)
 
 - Prisma `prisma-client-js` (client inside `node_modules`); only the `generated/prisma` layout works.
+- Prisma migrations at start (`prisma migrate deploy`: needs the Prisma CLI, `prisma/`, `prisma.config.ts`
+  and an entrypoint that chains before `node server.js`, also under dotenvx); insta-web and brl-intraweb
+  need it, and spec step 3 designs it.
 - spa: `/docker-entrypoint.d/*.sh` scripts run as `nginx` and cannot write under `/etc/nginx`.
+- go: a writable data directory (cc-usage `/data`, owned by 65532).
+- go: apps that read a listen address other than `PORT` must switch to `PORT` (cc-usage `CC_USAGE_LISTEN`).
 - go: a `healthcheck` subcommand and image `HEALTHCHECK`, only if Coolify needs a tool in the image.
