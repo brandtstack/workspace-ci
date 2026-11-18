@@ -82,11 +82,28 @@ class AppShape(unittest.TestCase):
             self.assertIn("job.workflow_repository", str(guard))
         self.assertNotRegex(TEXT, r"ref:\s*main")
 
+    def test_checkout_moved_out_of_workspace(self):
+        for job in ("verify", "image"):
+            ss = steps(job)
+            i = [k for k, s in enumerate(ss) if s.get("with", {}).get("path") == ".ws-ci"][0]
+            mv = ss[i + 1]["run"]
+            self.assertIn('mv "$GITHUB_WORKSPACE/.ws-ci" "$RUNNER_TEMP/ws-ci"', mv)
+            self.assertIn('-e "$RUNNER_TEMP/ws-ci"', mv)
+            for s in ss[i + 2:]:
+                self.assertNotIn(".ws-ci", str(s), job)
+
+    def test_no_template_expression_in_run_scripts(self):
+        for job in JOBS:
+            for s in steps(job):
+                self.assertNotIn("${{", s.get("run", ""), s)
+
     def test_build_step(self):
         b = find("image", "docker/build-push-action@")
         self.assertEqual(len(b), 1)
         w = b[0]["with"]
-        self.assertIn("needs.verify.outputs.dockerfile", w["file"])
+        self.assertIn("runner.temp", w["file"])
+        self.assertIn("ws-ci/dockerfiles/", w["file"])
+        self.assertIn("inputs.path", w["file"])
         self.assertNotIn("inputs.dockerfile", TEXT)
         self.assertIn("needs.verify.outputs.build-args", w["build-args"])
         self.assertIn("needs.verify.outputs.private-registry", w["secret-envs"])

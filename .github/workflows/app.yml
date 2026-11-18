@@ -7,7 +7,7 @@ name: app
 # Release stays in the caller's ci.yml (release.yml); this workflow never publishes anything but :sha-<head>.
 #
 # How this file reaches its own repo files (contract/, dockerfiles/): it checks out
-# ${{ job.workflow_repository }} at ${{ job.workflow_sha }} into .ws-ci, in every job that needs them,
+# ${{ job.workflow_repository }} at ${{ job.workflow_sha }} into .ws-ci and moves it to $RUNNER_TEMP/ws-ci, in every job that needs them,
 # after a step that fails if either value is empty. NEVER fall back to main.
 # Evidence (spike 5.1, 2026-11-18, throwaway reusable workflow called from a private repo on the Acer,
 # once pinned by SHA and once by branch; ci-launcher runs 44279643236 and 44279773156):
@@ -17,6 +17,8 @@ name: app
 #   github.workflow_sha, github.sha  the CALLER's commit (the wrong one)
 #   OIDC job_workflow_sha claim  equals job.workflow_sha, but needs id-token: write from the caller
 # job.workflow_sha is set without any id-token permission (run 44279773156), so callers grant nothing extra.
+# `smoke-args` is word-split into `docker run` flags (no spaces inside one argument) and is as trusted as
+# the caller's own CI code.
 # Not yet shown: a same-repo local call (uses: ./.github/workflows/app.yml); Task 7.4 asserts it.
 
 on:
@@ -81,12 +83,24 @@ jobs:
           path: .ws-ci
           persist-credentials: false
 
+      # Out of the workspace at once: the app's own unscoped vitest/tsc/eslint must not see
+      # workspace-ci's fixtures, and a `COPY . .` must not ship it (with its .git) into the image.
+      # A Dockerfile `file:` and a BuildKit named context need not lie inside the build context.
+      - name: Move workspace-ci out of the workspace
+        run: |
+          set -euo pipefail
+          if [ -e "$RUNNER_TEMP/ws-ci" ]; then
+            echo "::error::$RUNNER_TEMP/ws-ci already exists"
+            exit 1
+          fi
+          mv "$GITHUB_WORKSPACE/.ws-ci" "$RUNNER_TEMP/ws-ci"
+
       - name: Read the build contract
         id: contract
         working-directory: ${{ github.workspace }}
         env:
           APP_PATH: ${{ inputs.path }}
-        run: bash .ws-ci/contract/read.sh "${APP_PATH}/.github/build.yml"
+        run: bash "$RUNNER_TEMP/ws-ci/contract/read.sh" "${APP_PATH}/.github/build.yml"
 
       # --- node toolchain: next, spa, custom with `node` ---
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -305,15 +319,29 @@ jobs:
           path: .ws-ci
           persist-credentials: false
 
+      # Out of the workspace at once: the app's own unscoped vitest/tsc/eslint must not see
+      # workspace-ci's fixtures, and a `COPY . .` must not ship it (with its .git) into the image.
+      # A Dockerfile `file:` and a BuildKit named context need not lie inside the build context.
+      - name: Move workspace-ci out of the workspace
+        run: |
+          set -euo pipefail
+          if [ -e "$RUNNER_TEMP/ws-ci" ]; then
+            echo "::error::$RUNNER_TEMP/ws-ci already exists"
+            exit 1
+          fi
+          mv "$GITHUB_WORKSPACE/.ws-ci" "$RUNNER_TEMP/ws-ci"
+
       - name: Resolve image ref and head SHA
         id: meta
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           # GHCR rejects uppercase.
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
           # On pull_request, github.sha is the synthetic merge commit, NOT the
           # branch tip. The release workflow looks the image up by head SHA.
-          echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          echo "head=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -323,9 +351,9 @@ jobs:
           NPM_TOKEN: ${{ needs.verify.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
         with:
           context: ${{ inputs.path }}
-          # next/spa/go: an absolute path to the shared Dockerfile in .ws-ci (contract/read.sh);
-          # custom: relative to the build context, so prefixed with <path>.
-          file: ${{ needs.verify.outputs.family == 'custom' && format('{0}/{1}', inputs.path, needs.verify.outputs.dockerfile) || needs.verify.outputs.dockerfile }}
+          # Computed here, not taken from verify's `dockerfile` output (an absolute path on verify's runner).
+          # next/spa/go: the shared Dockerfile in this job's own workspace-ci copy; custom: <path>/<dockerfile>.
+          file: ${{ needs.verify.outputs.family == 'custom' && format('{0}/{1}', inputs.path, needs.verify.outputs.dockerfile) || format('{0}/ws-ci/dockerfiles/{1}.Dockerfile', runner.temp, needs.verify.outputs.family) }}
           target: ${{ needs.verify.outputs.family == 'next' && (needs.verify.outputs.dotenvx == 'true' && 'runtime-dotenvx' || 'runtime-plain') || '' }}
           load: true
           tags: ci-image:local
@@ -346,7 +374,8 @@ jobs:
           SMOKE_ARGS: ${{ needs.verify.outputs.smoke-args }}
         run: |
           set -euo pipefail
-          # Unquoted on purpose: SMOKE_ARGS is a word list of docker run flags (globbing off).
+          # Unquoted on purpose: SMOKE_ARGS is word-split into docker run flags (globbing off), so no
+          # argument may contain a space. It carries the same trust as the caller's own CI code.
           set -f
           # shellcheck disable=SC2086
           docker run -d --name smoke -p 8080:80 $SMOKE_ARGS ci-image:local

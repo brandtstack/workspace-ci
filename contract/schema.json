@@ -28,7 +28,7 @@
         { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
       ]
     },
-    "smoke-args": { "type": "string" },
+    "smoke-args": { "type": "string", "description": "Word-split into docker run flags: no spaces inside one argument. As trusted as the repo's own CI code." },
     "go-main": { "type": "string", "minLength": 1, "description": "go only. Package go build builds. Default ./cmd/<repo name>." },
     "go-dir": { "type": "string", "minLength": 1, "description": "go only. Module root. Default '.'." }
   },
