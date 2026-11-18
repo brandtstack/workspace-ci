@@ -1,0 +1,3 @@
+# expect: favicon
+family: next
+favicon: public/favicon.svg

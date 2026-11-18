@@ -1,0 +1,4 @@
+family: go
+go: "1.27"
+go-dir: server
+go-main: ./cmd/fixture

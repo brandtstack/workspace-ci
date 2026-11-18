@@ -1,0 +1,3 @@
+# expect: dockerfile: only allowed with family custom
+family: next
+dockerfile: Dockerfile

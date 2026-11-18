@@ -1,0 +1,4 @@
+# expect: value must be a single-line string
+family: next
+build-args:
+  NEXT_PUBLIC_A: "a\rb"

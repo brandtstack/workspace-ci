@@ -1,0 +1,4 @@
+family: spa
+node: "24"
+build-args:
+  VITE_FIXTURE: "1"

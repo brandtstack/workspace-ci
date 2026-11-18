@@ -1,0 +1,12 @@
+# expect: ok
+family: next
+favicon:
+  - a.svg
+  - b.svg
+  - c.svg
+build-args:
+  VITE_A: "1"
+  NEXT_PUBLIC_B: two words
+smoke-args: |
+  line one
+  line two

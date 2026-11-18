@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# Builds locally, with podman, what .github/workflows/app.yml's image job builds in CI, then smoke-tests it.
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: build-image [--no-verify] [--no-smoke] [<repo dir>]
+
+Reads <repo dir>/.github/build.yml (default dir: .), runs `npm run verify` (node) or `make verify` (go)
+in the repo, builds localhost/<repo>:dev with podman exactly as app.yml's image job does, boots it
+and polls http://127.0.0.1:8080/healthz for 60 s. The container is always removed afterwards.
+
+  --no-verify   skip the verify step
+  --no-smoke    build only; do not boot the image
+  -h, --help    this text
+
+Environment:
+  NPM_TOKEN                  required when the contract sets private-registry: true (a BuildKit secret; never printed)
+  BUILD_IMAGE_PORT           host port for the smoke run (default 8080)
+  BUILD_IMAGE_SMOKE_TIMEOUT  seconds to wait for /healthz (default 60)
+USAGE
+}
+
+die() { echo "build-image: $1" >&2; exit "${2:-1}"; }
+
+VERIFY=1
+SMOKE=1
+DIR=""
+for a in "$@"; do
+  case "$a" in
+    --no-verify) VERIFY=0 ;;
+    --no-smoke) SMOKE=0 ;;
+    -h|--help) usage; exit 0 ;;
+    -*) usage >&2; die "unknown flag: $a" 2 ;;
+    *) [ -z "$DIR" ] || { usage >&2; die "more than one directory given" 2; }; DIR="$a" ;;
+  esac
+done
+DIR="${DIR:-.}"
+[ -d "$DIR" ] || die "not a directory: $DIR"
+DIR="$(cd "$DIR" && pwd -P)"
+
+# workspace-ci root: the parent of this script's directory, symlinks followed.
+SRC="${BASH_SOURCE[0]}"
+while [ -L "$SRC" ]; do
+  LINK="$(readlink "$SRC")"
+  case "$LINK" in /*) SRC="$LINK" ;; *) SRC="$(dirname "$SRC")/$LINK" ;; esac
+done
+ROOT="$(cd "$(dirname "$SRC")/.." && pwd -P)"
+
+# --- contract: key=value lines, multi-line values as key<<DELIM ... DELIM -------------------------------
+# read.sh writes to $GITHUB_OUTPUT when it is set (a CI shell): unset it so the outputs come back on stdout.
+# GITHUB_REPOSITORY would also rename the go-main default, so it goes too.
+OUT="$(unset GITHUB_OUTPUT GITHUB_REPOSITORY; "$ROOT/contract/read.sh" "$DIR/.github/build.yml")" || exit 1
+[ -n "$OUT" ] || die "contract/read.sh printed nothing for $DIR/.github/build.yml"
+delim=""
+key=""
+first=0
+while IFS= read -r line || [ -n "$line" ]; do
+  if [ -n "$delim" ]; then
+    if [ "$line" = "$delim" ]; then delim=""
+    else
+      cur="C_${key//-/_}"
+      if [ "$first" = 1 ]; then printf -v "$cur" '%s' "$line"; first=0; else printf -v "$cur" '%s\n%s' "${!cur}" "$line"; fi
+    fi
+  elif [[ "$line" =~ ^([a-z-]+)\<\<(.+)$ ]]; then
+    key="${BASH_REMATCH[1]}"; delim="${BASH_REMATCH[2]}"; printf -v "C_${key//-/_}" '%s' ""; first=1
+  elif [[ "$line" =~ ^([a-z-]+)=(.*)$ ]]; then
+    printf -v "C_${BASH_REMATCH[1]//-/_}" '%s' "${BASH_REMATCH[2]}"
+  fi
+done <<EOT
+$OUT
+EOT
+
+FAMILY="$C_family"
+NAME="$(basename "$DIR" | tr '[:upper:]' '[:lower:]' | LC_ALL=C sed 's/[^a-z0-9._-]/-/g')"
+[ -n "${NAME//-/}" ] || die "cannot derive an image name from the directory name: $(basename "$DIR")"
+TAG="localhost/$NAME:dev"
+
+if [ "$C_private_registry" = true ] && [ -z "${NPM_TOKEN:-}" ]; then
+  die "the contract sets private-registry: true, so export NPM_TOKEN (a token that can read @brandtstack packages) first"
+fi
+
+# --- verify ----------------------------------------------------------------------------------------------
+if [ "$VERIFY" = 1 ]; then
+  if [ -n "$C_go" ]; then (cd "$DIR" && make verify)
+  elif [ -n "$C_node" ]; then (cd "$DIR" && npm run verify)
+  else echo "build-image: no node or go in the contract, skipping verify" >&2; fi
+fi
+
+# --- build -----------------------------------------------------------------------------------------------
+if [ "$FAMILY" = custom ]; then FILE="$DIR/$C_dockerfile"; else FILE="$ROOT/dockerfiles/$FAMILY.Dockerfile"; fi
+ARGS=(build -f "$FILE" --build-context "ws=$ROOT/dockerfiles" -t "$TAG")
+if [ "$FAMILY" = next ]; then
+  if [ "$C_dotenvx" = true ]; then ARGS+=(--target runtime-dotenvx); else ARGS+=(--target runtime-plain); fi
+fi
+case "$FAMILY" in
+  next|spa|custom)
+    B64="$(printf '%s' "$C_build_args" | base64 | tr -d '\n')"
+    [ "$FAMILY" = custom ] || ARGS+=(--build-arg "NODE=$C_node")
+    [ "$FAMILY" = next ] && ARGS+=(--build-arg "PRISMA=$C_prisma")
+    ARGS+=(--build-arg "PUBLIC_BUILD_ENV_B64=$B64") ;;
+  go) ARGS+=(--build-arg "GO=$C_go" --build-arg "GO_MAIN=$C_go_main" --build-arg "GO_DIR=$C_go_dir") ;;
+esac
+[ "$C_private_registry" = true ] && ARGS+=(--secret id=npm_token,env=NPM_TOKEN)
+ARGS+=("$DIR")
+podman "${ARGS[@]}" || die "podman build failed"
+
+[ "$SMOKE" = 1 ] || { echo "built $TAG"; exit 0; }
+
+# --- smoke -----------------------------------------------------------------------------------------------
+PORT="${BUILD_IMAGE_PORT:-8080}"
+WAIT="${BUILD_IMAGE_SMOKE_TIMEOUT:-60}"
+CID=""
+cleanup() { [ -z "$CID" ] || podman rm -f "$CID" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+# smoke-args is word-split into flags, globbing off (same trust and same rule as app.yml: no spaces inside one flag)
+set -f
+# shellcheck disable=SC2086
+RUN=(podman run -d --sysctl net.ipv4.ip_unprivileged_port_start=0 -p "127.0.0.1:$PORT:80")
+# shellcheck disable=SC2206
+RUN+=($C_smoke_args)
+if [ "$FAMILY" = next ] && [ "$C_dotenvx" = true ]; then
+  # As app.yml: the dotenvx ENTRYPOINT wrapper needs the private key, so the smoke starts the server directly.
+  RUN+=(--entrypoint node "$TAG" server.js)
+else
+  RUN+=("$TAG")
+fi
+CID="$("${RUN[@]}")" || die "podman run failed"
+set +f
+
+ok=0
+deadline=$((SECONDS + WAIT))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then ok=1; break; fi
+  sleep 1
+done
+if [ "$ok" != 1 ]; then
+  echo "build-image: container never answered on 127.0.0.1:$PORT/healthz within ${WAIT}s; its log:" >&2
+  podman logs "$CID" >&2 || true
+  exit 1
+fi
+echo "built and smoked $TAG (127.0.0.1:$PORT/healthz OK)"

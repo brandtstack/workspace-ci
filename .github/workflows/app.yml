@@ -1,0 +1,523 @@
+name: app
+
+# The contract workflow: reads the caller's <path>/.github/build.yml (contract/read.sh, schema in
+# contract/schema.json) and runs verify, integration and image from it. The contract is the whole
+# configuration, so the only inputs are `runner` and `path`. Name the caller's job `ci` and the checks
+# come out as `ci / verify`, `ci / integration`, `ci / image`, so the three job ids below must not change.
+# Release stays in the caller's ci.yml (release.yml); this workflow never publishes anything but :sha-<head>.
+#
+# How this file reaches its own repo files (contract/, dockerfiles/): it checks out
+# ${{ job.workflow_repository }} at ${{ job.workflow_sha }} into .ws-ci and moves it to $RUNNER_TEMP/ws-ci, in every job that needs them,
+# after a step that fails if either value is empty. NEVER fall back to main.
+# Evidence (spike 5.1, 2026-11-18, throwaway reusable workflow called from a private repo on the Acer,
+# once pinned by SHA and once by branch; ci-launcher runs 44279643236 and 44279773156):
+#   job.workflow_sha         the pinned SHA / the branch head SHA            <- used
+#   job.workflow_repository  brandtstack/workspace-ci                        <- used
+#   github.job_workflow_sha  empty (the context does not exist)
+#   github.workflow_sha, github.sha  the CALLER's commit (the wrong one)
+#   OIDC job_workflow_sha claim  equals job.workflow_sha, but needs id-token: write from the caller
+# job.workflow_sha is set without any id-token permission (run 44279773156), so callers grant nothing extra.
+# `smoke-args` is word-split into `docker run` flags (no spaces inside one argument) and is as trusted as
+# the caller's own CI code.
+# A same-repo local call (uses: ./.github/workflows/app.yml) resolves to the run's own commit:
+# job.workflow_sha == github.sha (ci-launcher runs 44289692203 and 44286543151); the 'Check the workflow ref'
+# step asserts it on every run.
+
+on:
+  workflow_call:
+    inputs:
+      # JSON for runs-on. Private repos on the self-hosted Acer runner pass
+      # '["self-hosted","priv-ci"]'. The default stays GitHub-hosted, so this public repo and
+      # every caller that does not opt in never touch the Acer. NEVER set it from a public repo.
+      runner: { type: string, default: '"ubuntu-latest"' }
+      # The app root: <path>/.github/build.yml is the contract, verify and integration run in it, it is
+      # the image build context, and a `custom` dockerfile is <path>/<dockerfile>. Apps leave it at '.';
+      # the fixtures use it. favicon paths stay relative to the CHECKOUT ROOT (as in node-ci), not <path>.
+      path:   { type: string, default: '.' }
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    permissions:
+      contents: read
+      # packages: read is required for a private @brandtstack dep. A reusable workflow's own
+      # permissions CAP the caller's, so the caller granting packages: write is not enough.
+      packages: read
+    outputs:
+      family:           ${{ steps.contract.outputs.family }}
+      dockerfile:       ${{ steps.contract.outputs.dockerfile }}
+      node:             ${{ steps.contract.outputs.node }}
+      go:               ${{ steps.contract.outputs.go }}
+      prisma:           ${{ steps.contract.outputs.prisma }}
+      dotenvx:          ${{ steps.contract.outputs.dotenvx }}
+      integration:      ${{ steps.contract.outputs.integration }}
+      favicon:          ${{ steps.contract.outputs.favicon }}
+      build-args:       ${{ steps.contract.outputs.build-args }}
+      private-registry: ${{ steps.contract.outputs.private-registry }}
+      coolify-app:      ${{ steps.contract.outputs.coolify-app }}
+      smoke-args:       ${{ steps.contract.outputs.smoke-args }}
+      go-main:          ${{ steps.contract.outputs.go-main }}
+      go-dir:           ${{ steps.contract.outputs.go-dir }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require the workflow's own ref
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WF_REPO" ] || [ -z "$WF_SHA" ]; then
+            echo "::error::job.workflow_repository / job.workflow_sha is empty - cannot check out workspace-ci at its own ref (never falling back to main)"
+            exit 1
+          fi
+
+      - name: Check out workspace-ci at its own ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .ws-ci
+          persist-credentials: false
+
+      # Out of the workspace at once: the app's own unscoped vitest/tsc/eslint must not see
+      # workspace-ci's fixtures, and a `COPY . .` must not ship it (with its .git) into the image.
+      # A Dockerfile `file:` and a BuildKit named context need not lie inside the build context.
+      - name: Move workspace-ci out of the workspace
+        run: |
+          set -euo pipefail
+          if [ -e "$RUNNER_TEMP/ws-ci" ]; then
+            echo "::error::$RUNNER_TEMP/ws-ci already exists"
+            exit 1
+          fi
+          mv "$GITHUB_WORKSPACE/.ws-ci" "$RUNNER_TEMP/ws-ci"
+
+      # A same-repo call (the fixtures: uses: ./.github/workflows/app.yml) must resolve to the very commit
+      # the run is for. Always printed, so a cross-repo caller's log shows which workspace-ci it got.
+      - name: Check the workflow ref
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+          RUN_REPO: ${{ github.repository }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          echo "workspace-ci resolved: ${WF_REPO}@${WF_SHA} (run: ${RUN_REPO}@${RUN_SHA})"
+          if [ "$RUN_REPO" = "$WF_REPO" ] && [ "$WF_SHA" != "$RUN_SHA" ]; then
+            echo "::error::same-repo call, but job.workflow_sha (${WF_SHA}) is not github.sha (${RUN_SHA})"
+            exit 1
+          fi
+
+      - name: Read the build contract
+        id: contract
+        working-directory: ${{ github.workspace }}
+        env:
+          APP_PATH: ${{ inputs.path }}
+        run: bash "$RUNNER_TEMP/ws-ci/contract/read.sh" "${APP_PATH}/.github/build.yml"
+
+      # --- node toolchain: next, spa, custom with `node` ---
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.contract.outputs.node != ''
+        with:
+          node-version: ${{ steps.contract.outputs.node }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.path }}/package-lock.json
+      - name: npm ci
+        if: steps.contract.outputs.node != ''
+        run: npm ci
+        env:
+          NPM_TOKEN: ${{ steps.contract.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
+      - name: npm run verify
+        if: steps.contract.outputs.node != ''
+        run: npm run verify
+
+      # --- go toolchain: go, custom with `go` (steps copied from go-ci.yml) ---
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.contract.outputs.go != ''
+        with:
+          go-version: ${{ steps.contract.outputs.go }}
+          # The Acer's toolcache holds an older patch than the golang:<go-version>-alpine images
+          # build with (go1.27.1 vs 1.27.3, 2026-11-09); test on the patch that ships (ops#36 row 2).
+          check-latest: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.contract.outputs.go != ''
+        with:
+          node-version: '24'
+      - name: make verify
+        if: steps.contract.outputs.go != ''
+        run: make verify
+
+      # govulncheck judges the stdlib of the Go on PATH, and setup-go above takes the runner's
+      # cached patch (go1.27.1 on the Acer, 2026-11-09) while every image builds FROM
+      # golang:<go-version>-alpine, i.e. the latest patch. Scanned with the cached one, all six Go
+      # repos reported 5-12 reachable stdlib vulns that the images do not ship (and 0 with 1.27.3).
+      # So this second setup-go fetches the latest patch, after `make verify` has run on the first.
+      #
+      # Policy (Adrian, 2026-11-09): this check FAILS anything but a push, and only WARNS on a push,
+      # because release `needs: ci` and a vuln published between a green PR and its merge must not
+      # strand that deploy. That covers infrastructure failures too (no manifest, no proxy, a full
+      # disk), hence continue-on-error on a push for both steps, not only the scanner's own exit.
+      - name: Set up the latest Go ${{ steps.contract.outputs.go }} patch for govulncheck
+        id: vulngo
+        if: steps.contract.outputs.go != ''
+        continue-on-error: ${{ github.event_name == 'push' }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ steps.contract.outputs.go }}
+          check-latest: true
+          cache: false
+
+      # Reached only on a push whose setup failed (on any other event that failure already failed
+      # the job). Scanning with the cached patch instead would report vulns the images do not ship.
+      - name: govulncheck skipped (no latest Go patch)
+        if: steps.contract.outputs.go != '' && steps.vulngo.outcome == 'failure'
+        env:
+          GO_VERSION: ${{ steps.contract.outputs.go }}
+        run: |
+          echo "::warning::govulncheck did not run - the latest Go ${GO_VERSION} patch could not be set up (push: not blocking the release)"
+
+      # Every module under <path> (git ls-files, so a nested server/go.mod counts). Exit 3 means a
+      # reachable vuln; any other non-zero exit is a scanner error. Both fail, except on a push.
+      # Offline rows: tests/go-ci/test_govulncheck.py (against go-ci.yml, where this block is the original).
+      - name: govulncheck
+        if: steps.contract.outputs.go != '' && steps.vulngo.outcome == 'success'
+        continue-on-error: ${{ github.event_name == 'push' }}
+        env:
+          GOVULNCHECK_VERSION: v1.9.0
+          ENFORCE: ${{ github.event_name != 'push' }}
+        run: |
+          set -euo pipefail
+          # Building govulncheck from cold took ~104 s of a 112 s step (bcli, Acer, 2026-11-09); the
+          # scan itself ~7 s. So keep the binary in the runner tool cache (on the Acer, the shared
+          # ci-toolcache volume), keyed by scanner version + exact Go patch: built once per release.
+          # Build in a temp dir beside the target (same filesystem, so the mv is an atomic rename):
+          # two jobs building at once can never leave a half-written binary in place.
+          # ⚠️ Trust: a cache hit is trusted by path. Any job on the Acer can write this volume, so
+          # one repo's PR code could plant a binary another repo then runs. Accepted, as for the Go
+          # toolchain setup-go caches in the same volume: every repo on this runner is private and
+          # Adrian's (infra/reference/ci-runner.md). A checksum kept on the same volume adds nothing.
+          root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/govulncheck"
+          bin="$root/${GOVULNCHECK_VERSION}-$(go env GOVERSION)"
+          tmp=""
+          trap '[ -z "$tmp" ] || rm -rf "$tmp"' EXIT
+          if [ ! -x "$bin" ]; then
+            mkdir -p "$root"
+            tmp=$(mktemp -d "$root/.build.XXXXXX")
+            GOBIN="$tmp" go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+            mv -f "$tmp/govulncheck" "$bin"
+          fi
+          "$bin" -version
+          mods=$(git ls-files -- ':(glob)**/go.mod')
+          if [ -z "$mods" ]; then
+            echo "::error::govulncheck: no go.mod tracked in this repo"
+            exit 1
+          fi
+          worst=0
+          while IFS= read -r mod; do
+            dir=$(dirname "$mod")
+            echo "::group::govulncheck ${dir}"
+            rc=0
+            (cd "$dir" && "$bin" ./... </dev/null) || rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -eq 3 ]; then
+              msg="govulncheck: reachable vulnerabilities in module ${dir} (expand the group above)"
+            elif [ "$rc" -ne 0 ]; then
+              msg="govulncheck: scanner error (exit ${rc}) in module ${dir}"
+            else
+              echo "govulncheck: ${dir} clean"
+              continue
+            fi
+            if [ "$ENFORCE" = true ]; then echo "::error::${msg}"; else echo "::warning::${msg} (push: not blocking the release)"; fi
+            worst=1
+          done <<< "$mods"
+          if [ "$worst" -ne 0 ] && [ "$ENFORCE" = true ]; then exit 1; fi
+
+      # `uses:` steps ignore defaults.run.working-directory, so favicon paths are root-relative.
+      # PLAYWRIGHT_BROWSERS_PATH is the shared toolcache volume: Chromium downloads once per Acer.
+      - name: Favicon contrast (tabcheck)
+        if: steps.contract.outputs.favicon != ''
+        uses: brandtstack/tabcheck@6dcc3c5a8ddd08a48fc10e0ca0d2d7894f3443b9 # v0.3.0
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: /opt/hostedtoolcache/ms-playwright
+        with:
+          path: ${{ steps.contract.outputs.favicon }}
+
+  # Skipped (not failed) when the contract says integration: false; a skipped job satisfies a required check.
+  integration:
+    if: needs.verify.outputs.integration == 'true'
+    needs: verify
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    permissions:
+      contents: read
+      packages: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    services:
+      postgres:
+        image: postgres:16.15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # 127.0.0.1, never localhost (loopback-is-ipv6). Go drivers need sslmode=disable, node apps take no query.
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/test${{ needs.verify.outputs.go != '' && '?sslmode=disable' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: needs.verify.outputs.node != ''
+        with:
+          node-version: ${{ needs.verify.outputs.node }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.path }}/package-lock.json
+      - name: npm ci
+        if: needs.verify.outputs.node != ''
+        run: npm ci
+        env:
+          NPM_TOKEN: ${{ needs.verify.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
+      - name: npm run verify:integration
+        if: needs.verify.outputs.node != ''
+        run: npm run verify:integration
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: needs.verify.outputs.go != ''
+        with:
+          go-version: ${{ needs.verify.outputs.go }}
+          # The Acer's toolcache holds an older patch than the golang:<go-version>-alpine images
+          # build with (go1.27.1 vs 1.27.3, 2026-11-09); test on the patch that ships (ops#36 row 2).
+          check-latest: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: needs.verify.outputs.go != ''
+        with:
+          node-version: '24'
+      - name: make verify-integration
+        if: needs.verify.outputs.go != ''
+        run: make verify-integration
+
+  # Builds the production image ONCE and publishes :sha-<head>; release retags that exact image on
+  # merge, so there is deliberately no rebuild on main. Pull requests only.
+  image:
+    if: github.event_name == 'pull_request'
+    needs: verify
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require the workflow's own ref
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WF_REPO" ] || [ -z "$WF_SHA" ]; then
+            echo "::error::job.workflow_repository / job.workflow_sha is empty - cannot check out workspace-ci at its own ref (never falling back to main)"
+            exit 1
+          fi
+
+      - name: Check out workspace-ci at its own ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .ws-ci
+          persist-credentials: false
+
+      # Out of the workspace at once: the app's own unscoped vitest/tsc/eslint must not see
+      # workspace-ci's fixtures, and a `COPY . .` must not ship it (with its .git) into the image.
+      # A Dockerfile `file:` and a BuildKit named context need not lie inside the build context.
+      - name: Move workspace-ci out of the workspace
+        run: |
+          set -euo pipefail
+          if [ -e "$RUNNER_TEMP/ws-ci" ]; then
+            echo "::error::$RUNNER_TEMP/ws-ci already exists"
+            exit 1
+          fi
+          mv "$GITHUB_WORKSPACE/.ws-ci" "$RUNNER_TEMP/ws-ci"
+
+      # A same-repo call (the fixtures: uses: ./.github/workflows/app.yml) must resolve to the very commit
+      # the run is for. Always printed, so a cross-repo caller's log shows which workspace-ci it got.
+      - name: Check the workflow ref
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+          RUN_REPO: ${{ github.repository }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          echo "workspace-ci resolved: ${WF_REPO}@${WF_SHA} (run: ${RUN_REPO}@${RUN_SHA})"
+          if [ "$RUN_REPO" = "$WF_REPO" ] && [ "$WF_SHA" != "$RUN_SHA" ]; then
+            echo "::error::same-repo call, but job.workflow_sha (${WF_SHA}) is not github.sha (${RUN_SHA})"
+            exit 1
+          fi
+
+      - name: Resolve image ref and head SHA
+        id: meta
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # GHCR rejects uppercase.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          # On pull_request, github.sha is the synthetic merge commit, NOT the
+          # branch tip. The release workflow looks the image up by head SHA.
+          echo "head=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+
+      # The contract's NEXT_PUBLIC_* / VITE_* names are arbitrary, so a shared Dockerfile cannot declare them.
+      # They travel as ONE declared ARG, base64 of the K=V lines (public values only, by contract).
+      - name: Encode contract build args
+        id: bargs
+        env:
+          BUILD_ARGS: ${{ needs.verify.outputs.build-args }}
+        run: |
+          set -euo pipefail
+          echo "b64=$(printf '%s' "$BUILD_ARGS" | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build production image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          NPM_TOKEN: ${{ needs.verify.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
+        with:
+          context: ${{ inputs.path }}
+          # Computed here, not taken from verify's `dockerfile` output (an absolute path on verify's runner).
+          # next/spa/go: the shared Dockerfile in this job's own workspace-ci copy; custom: <path>/<dockerfile>.
+          file: ${{ needs.verify.outputs.family == 'custom' && format('{0}/{1}', inputs.path, needs.verify.outputs.dockerfile) || format('{0}/ws-ci/dockerfiles/{1}.Dockerfile', runner.temp, needs.verify.outputs.family) }}
+          target: ${{ needs.verify.outputs.family == 'next' && (needs.verify.outputs.dotenvx == 'true' && 'runtime-dotenvx' || 'runtime-plain') || '' }}
+          # Named context `ws`: the shared Dockerfiles COPY their helper files (nginx/, next/) from workspace-ci
+          # with `COPY --from=ws`, because the build context is the app repo.
+          build-contexts: ws=${{ runner.temp }}/ws-ci/dockerfiles
+          load: true
+          tags: ci-image:local
+          # Blank lines are dropped by the action. ARG names are the shared Dockerfiles' (Task 6).
+          # PUBLIC_BUILD_ENV_B64 also goes to `custom`: a custom Dockerfile declares and decodes it like next/spa (dockerfiles/README.md).
+          build-args: |
+            ${{ contains(fromJSON('["next","spa","custom"]'), needs.verify.outputs.family) && format('PUBLIC_BUILD_ENV_B64={0}', steps.bargs.outputs.b64) || '' }}
+            ${{ contains(fromJSON('["next","spa"]'), needs.verify.outputs.family) && format('NODE={0}', needs.verify.outputs.node) || '' }}
+            ${{ needs.verify.outputs.family == 'next' && format('PRISMA={0}', needs.verify.outputs.prisma) || '' }}
+            ${{ needs.verify.outputs.family == 'go' && format('GO={0}', needs.verify.outputs.go) || '' }}
+            ${{ needs.verify.outputs.family == 'go' && format('GO_MAIN={0}', needs.verify.outputs.go-main) || '' }}
+            ${{ needs.verify.outputs.family == 'go' && format('GO_DIR={0}', needs.verify.outputs.go-dir) || '' }}
+          # A BuildKit secret, NOT a build-arg: an ARG renders into the build log in clear.
+          # Format is <secret-id>=<env var name>.
+          secret-envs: ${{ needs.verify.outputs.private-registry == 'true' && 'npm_token=NPM_TOKEN' || '' }}
+
+      # D4 for every app: the image runs as a non-root user and exposes exactly port 80.
+      - name: Image contract (non-root user, exposed port 80)
+        run: |
+          set -euo pipefail
+          user="$(docker image inspect --format '{{.Config.User}}' ci-image:local)"
+          ports="$(docker image inspect --format '{{json .Config.ExposedPorts}}' ci-image:local)"
+          echo "Config.User=${user} Config.ExposedPorts=${ports}"
+          case "$user" in
+            ""|0|root|0:*|root:*) echo "::error::image runs as root (Config.User='${user}')"; exit 1 ;;
+          esac
+          if [ "$ports" != '{"80/tcp":{}}' ]; then
+            echo "::error::image must expose exactly 80/tcp, got ${ports}"
+            exit 1
+          fi
+
+      - name: Boot and smoke test
+        env:
+          SMOKE_ARGS: ${{ needs.verify.outputs.smoke-args }}
+          FAMILY: ${{ needs.verify.outputs.family }}
+          DOTENVX: ${{ needs.verify.outputs.dotenvx }}
+        run: |
+          set -euo pipefail
+          # Unquoted on purpose: SMOKE_ARGS is word-split into docker run flags (globbing off), so no
+          # argument may contain a space. It carries the same trust as the caller's own CI code.
+          set -f
+          if [ "$FAMILY" = next ] && [ "$DOTENVX" = true ]; then
+            # A dotenvx image's ENTRYPOINT wrapper needs the private key, which CI never has, so the smoke
+            # bypasses it and starts the server directly (built in, not a contract field).
+            # shellcheck disable=SC2086
+            docker run -d --name smoke -p 8080:80 $SMOKE_ARGS --entrypoint node ci-image:local server.js
+          else
+            # shellcheck disable=SC2086
+            docker run -d --name smoke -p 8080:80 $SMOKE_ARGS ci-image:local
+          fi
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::container never answered on published port 80/healthz"
+            docker logs smoke || true
+            docker rm -f smoke || true
+            exit 1
+          fi
+          echo "external reachability OK"
+
+      # Not for go images: distroless has no shell and no wget, so `docker exec` cannot run anything there.
+      - name: Smoke test from INSIDE the container
+        if: needs.verify.outputs.node != ''
+        run: |
+          set -euo pipefail
+          # This is the check that catches the Next standalone $HOSTNAME bug:
+          # a process bound to the container's own IP still answers a published
+          # port, so the external curl above passes while in-container calls fail.
+          # node:24-alpine and nginx:alpine ship busybox wget, NOT curl.
+          # Uses the literal 127.0.0.1, not localhost: on Alpine, localhost can
+          # resolve to ::1 and busybox wget prefers it.
+          if ! docker exec smoke wget -qO- "http://127.0.0.1:80/healthz" >/dev/null; then
+            echo "::error::container does not answer on 127.0.0.1 - check HOSTNAME/PORT binding"
+            docker logs smoke || true
+            docker rm -f smoke || true
+            exit 1
+          fi
+          echo "internal loopback OK"
+
+      # workspace-ci's own fixtures only: <path>/.github/fixture-check.sh asserts what the page serves
+      # (e.g. that a contract build-arg reached the build). Never runs for an app repo.
+      - name: Fixture page check
+        if: github.repository == 'brandtstack/workspace-ci'
+        env:
+          APP_PATH: ${{ inputs.path }}
+        run: |
+          set -euo pipefail
+          script="${APP_PATH}/.github/fixture-check.sh"
+          if [ -f "$script" ]; then
+            bash "$script" "http://127.0.0.1:8080"
+          else
+            echo "no ${script}, nothing to check"
+          fi
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f smoke || true
+
+      # Push happens last, so a smoke failure means nothing reaches the registry. Both steps are off in
+      # workspace-ci itself (the fixture matrix builds and smokes but must publish nothing).
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: github.repository != 'brandtstack/workspace-ci'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish :sha-<head> to GHCR
+        if: github.repository != 'brandtstack/workspace-ci'
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          HEAD:  ${{ steps.meta.outputs.head }}
+        run: |
+          set -euo pipefail
+          # docker tag, not a second build: the pushed bytes are exactly the
+          # image the smoke steps just exercised.
+          docker tag ci-image:local "${IMAGE}:sha-${HEAD}"
+          docker push "${IMAGE}:sha-${HEAD}"
+          echo "published ${IMAGE}:sha-${HEAD}"

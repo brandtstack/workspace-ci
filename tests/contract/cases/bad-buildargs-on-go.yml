@@ -1,0 +1,4 @@
+# expect: build-args: not allowed with family go
+family: go
+build-args:
+  VITE_A: "1"

@@ -1,0 +1,3 @@
+# expect: node: must be "24"
+family: next
+node: 24.0

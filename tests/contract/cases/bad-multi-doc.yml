@@ -1,0 +1,4 @@
+# expect: <file>: more than one YAML document
+family: spa
+---
+family: next

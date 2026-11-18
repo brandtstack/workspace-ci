@@ -1,0 +1,4 @@
+# expect: go: must be a quoted string
+family: go
+go: |
+  1.27

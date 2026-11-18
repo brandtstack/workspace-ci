@@ -1,0 +1,3 @@
+# expect: dockerfile
+family: custom
+node: "24"

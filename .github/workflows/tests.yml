@@ -32,6 +32,18 @@ jobs:
       - name: Offline tests for node-ci.yml's favicon input
         run: |
           "$RUNNER_TEMP/venv/bin/python" tests/node-ci/test_favicon.py
+      - name: Tests for the build.yml contract reader
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" tests/contract/test_contract.py
+      - name: Offline shape tests for app.yml
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" tests/app/test_app_shape.py
+      - name: No shared Dockerfile runs a gate
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" tests/dockerfiles/test_no_gate.py
+      - name: Tests for scripts/build-image (fake podman)
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" tests/build-image/test_build_image.py
       # Renovate reads default.json (the shared preset) and renovate.json. Named explicitly: with no
       # arguments the validator checks renovate.json only. --strict makes a config that Renovate would
       # have to auto-migrate fail the job. It does not resolve `extends` presets, so a misspelt preset
@@ -41,3 +53,29 @@ jobs:
           node-version: 24
       - name: Renovate config
         run: npx --yes --package renovate@44.126.0 -- renovate-config-validator --strict default.json renovate.json
+      # Negative fixture. A `uses:` job has no steps and no continue-on-error, so a failing app.yml call
+      # cannot be asserted from here; the reader is asserted directly. app.yml's shape test pins that the
+      # contract step is verify's first real step and that image/integration `needs: verify`.
+      - name: Contract reader rejects the bad-contract fixture
+        run: |
+          set -u
+          rc=0
+          err="$(bash contract/read.sh fixtures/bad-contract/.github/build.yml 2>&1 >/dev/null)" || rc=$?
+          echo "exit $rc: $err"
+          [ "$rc" -eq 1 ] || { echo "::error::expected exit 1 from the reader"; exit 1; }
+          case "$err" in *familly*) ;; *) echo "::error::stderr does not name familly"; exit 1 ;; esac
+
+  # The fixture apps run through the real contract workflow, same-repo (so the ref check applies).
+  # Public repo: GitHub-hosted runners only, never the Acer. app.yml's publish steps are off in this repo.
+  fixtures:
+    strategy:
+      fail-fast: false
+      matrix:
+        family: [next, next-dotenvx, spa, go]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/app.yml
+    with:
+      runner: '"ubuntu-latest"'
+      path: fixtures/${{ matrix.family }}

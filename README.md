@@ -317,6 +317,46 @@ with no artifact to promote; `release` alone fails after CI has already passed.
 ⚠️ Keep `.dockerignore` at the **repo root** — it is honored for a build whose context is the repo
 root even when the Dockerfile is in a subdirectory. A `deploy/.dockerignore` is silently ignored.
 
+## App contract (`app.yml`)
+
+**Not yet adopted, pilots in spec step 3.** No repo calls `app.yml` yet.
+
+One file, `.github/build.yml` in the app repo, is the whole build configuration. `app.yml` reads it with
+`contract/read.sh` and runs `verify`, `integration` and `image` from it. The keys and their rules are in
+[`contract/schema.json`](contract/schema.json); what each family's shared Dockerfile expects from the app
+is in [`dockerfiles/README.md`](dockerfiles/README.md). The only workflow inputs are `runner` and `path`.
+
+The caller's `.github/workflows/ci.yml` (name the job `ci` so the checks come out as `ci / verify`,
+`ci / integration`, `ci / image`; release stays in the caller):
+
+```yaml
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+jobs:
+  ci:
+    permissions:
+      contents: read
+      packages: write
+    uses: brandtstack/workspace-ci/.github/workflows/app.yml@<40-hex> # main
+    with:
+      runner: '["self-hosted","priv-ci"]'
+```
+
+Repo-specific image probes do not carry over: tilde's required `headers` job builds the repo's own
+Dockerfile, so on adoption it must move to pulling `:sha-<head>` after `ci / image` instead (spec step 3
+handles it).
+
+### Building it locally
+
+`scripts/build-image [--no-verify] [--no-smoke] [<repo dir>]` builds what the `image` job builds, with
+podman only: it reads the repo's `build.yml`, runs `npm run verify` (or `make verify` for go), builds
+`localhost/<repo>:dev` with the same Dockerfile, target and build args, then boots it with
+`-p 127.0.0.1:8080:80` and polls `/healthz` for 60 s. It exits non-zero on any failure and prints the
+container log. A contract with `private-registry: true` needs `NPM_TOKEN` exported. `BUILD_IMAGE_PORT`
+changes the host port and `BUILD_IMAGE_SMOKE_TIMEOUT` the 60 s wait. Tests (fake podman): `tests/build-image/test_build_image.py`.
+
 ## Versioning
 
 There is **no version in `package.json`** and no version commit on `main`. The

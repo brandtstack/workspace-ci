@@ -1,0 +1,3 @@
+# Deliberately invalid (unknown key `familly`): tests.yml asserts contract/read.sh rejects it. Never built.
+family: next
+familly: next
