@@ -462,7 +462,8 @@ jobs:
           fi
           echo "external reachability OK"
 
-      # Not for go images: distroless has no shell and no wget, so `docker exec` cannot run anything there.
+      # Not for go images: distroless has no shell and no wget. Their in-container check is the next step,
+      # which execs the app binary itself.
       - name: Smoke test from INSIDE the container
         if: needs.verify.outputs.node != ''
         run: |
@@ -480,6 +481,32 @@ jobs:
             exit 1
           fi
           echo "internal loopback OK"
+
+      # go images: no shell, so the in-container check is the app's own `healthcheck` subcommand, the same
+      # command the image HEALTHCHECK runs (dockerfiles/README.md "go"). Enforces it for every go caller.
+      - name: Go healthcheck subcommand and image HEALTHCHECK
+        if: needs.verify.outputs.family == 'go'
+        run: |
+          set -euo pipefail
+          if ! docker exec smoke /app healthcheck; then
+            echo "::error::'/app healthcheck' did not exit 0 inside the container (dockerfiles/README.md \"go\")"
+            docker logs smoke || true
+            exit 1
+          fi
+          echo "healthcheck subcommand OK"
+          status=""
+          for _ in $(seq 1 30); do
+            status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' smoke)"
+            [ "$status" = healthy ] && break
+            sleep 1
+          done
+          if [ "$status" != healthy ]; then
+            echo "::error::State.Health.Status is '${status}' after 30 s, want healthy"
+            docker inspect --format '{{json .State.Health}}' smoke || true
+            docker logs smoke || true
+            exit 1
+          fi
+          echo "image HEALTHCHECK healthy"
 
       # workspace-ci's own fixtures only: <path>/.github/fixture-check.sh asserts what the page serves
       # (e.g. that a contract build-arg reached the build). Never runs for an app repo.

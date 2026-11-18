@@ -10,10 +10,15 @@ COPY . .
 WORKDIR /src/${GO_DIR}
 RUN go mod download
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/app ${GO_MAIN}
+# Empty data dir for every go image: a named volume mounted at /data takes this ownership on first mount.
+RUN mkdir -p /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/app /app
+COPY --from=build --chown=65532:65532 /out/data /data
 ENV PORT=80
 EXPOSE 80
 USER 65532:65532
+# Exec form: distroless has no shell. The app implements `healthcheck` (dockerfiles/README.md "go").
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 CMD ["/app","healthcheck"]
 ENTRYPOINT ["/app"]

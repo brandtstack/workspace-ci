@@ -348,7 +348,9 @@ Release (on push to main) stays in the caller, in **contract mode**: `release.ym
 from `build.yml`'s `coolify-app` (exactly one, for now), and before deploying writes the app's
 `ports_exposes` (80) and health check from the family: next/spa get Coolify's http check on
 `127.0.0.1:80/healthz`; go keeps Coolify's check off and relies on the image's own `HEALTHCHECK`
-(distroless has no shell for Coolify's `CMD-SHELL` check). The values are read back before the deploy;
+(distroless has no shell for Coolify's `CMD-SHELL` check). That a disabled Coolify check keeps the image
+`HEALTHCHECK` on the deployed container is source-read only (ci-launcher `coolify_probe.md` row 1); the
+first go pilot (cc-usage) measures it with `docker inspect` on kvm4. The values are read back before the deploy;
 hand edits in Coolify are overwritten on every release. The sync runs before the image is promoted
 and the tag pushed, so a refused or mismatched sync leaves nothing minted and a re-run retries it.
 `coolify-app` must be a Coolify uuid (8-64 lowercase letters and digits).
