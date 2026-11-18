@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Tests for contract/read.sh (the .github/build.yml reader). Needs bash, jq, curl and network
+for the one-time yq download (cached in a temp RUNNER_TOOL_CACHE). Run: python3 tests/contract/test_contract.py
+"""
+import glob
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+READ = os.path.join(ROOT, "contract", "read.sh")
+CASES = os.path.join(HERE, "cases")
+YQ_VERSION = "4.47.2"
+REPO = "brandtstack/demo-repo"
+
+
+def dockerfile(family):
+    return os.path.join(ROOT, "dockerfiles", family + ".Dockerfile")
+
+
+def base(**kw):
+    out = {
+        "family": "", "dockerfile": "", "node": "", "go": "", "prisma": "false",
+        "dotenvx": "false", "integration": "false", "favicon": "", "build-args": "",
+        "private-registry": "false", "coolify-app": "", "smoke-args": "",
+        "go-main": "", "go-dir": "",
+    }
+    out.update(kw)
+    return out
+
+
+EXPECTED = {
+    "ok-next-full": base(
+        family="next", dockerfile=dockerfile("next"), node="24", prisma="true",
+        dotenvx="true", integration="true",
+        favicon="public/favicon.svg\npublic/icon.svg",
+        **{"build-args": "NEXT_PUBLIC_SITE_URL=https://example.test\nNEXT_PUBLIC_FLAG=1",
+           "private-registry": "true",
+           "coolify-app": "app.example.test\napp2.example.test",
+           "smoke-args": "--path /health --port 3000"}),
+    "ok-spa-min": base(family="spa", dockerfile=dockerfile("spa"), node="24"),
+    "ok-go-subdir": base(
+        family="go", dockerfile=dockerfile("go"), go="1.27",
+        **{"coolify-app": "usage.example.test", "go-main": "./cmd/usage-server", "go-dir": "server"}),
+    "ok-custom": base(family="custom", dockerfile="deploy/Dockerfile", node="24"),
+}
+
+
+def parse_output(text):
+    """Parse GITHUB_OUTPUT format (key=value and key<<DELIM heredocs)."""
+    out, lines, i = {}, text.split("\n"), 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        if not line:
+            continue
+        m = re.match(r"^([A-Za-z0-9_-]+)<<(.+)$", line)
+        if m:
+            key, delim, vals = m.group(1), m.group(2), []
+            while lines[i] != delim:
+                vals.append(lines[i])
+                i += 1
+            i += 1
+            out[key] = "\n".join(vals)
+        else:
+            k, _, v = line.partition("=")
+            out[k] = v
+    return out
+
+
+def run(path, tool_cache, extra_env=None, github_output=True):
+    env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_OUTPUT", "GITHUB_REPOSITORY")}
+    env["RUNNER_TOOL_CACHE"] = tool_cache
+    env["GITHUB_REPOSITORY"] = REPO
+    env.update(extra_env or {})
+    out = None
+    if github_output:
+        fd, out = tempfile.mkstemp()
+        os.close(fd)
+        env["GITHUB_OUTPUT"] = out
+    p = subprocess.run(["bash", READ, path], capture_output=True, text=True, env=env)
+    written = ""
+    if out:
+        with open(out) as f:
+            written = f.read()
+        os.unlink(out)
+    return p, written
+
+
+class ContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cache = tempfile.mkdtemp()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.cache, ignore_errors=True)
+
+    def test_ok_cases(self):
+        for name, want in EXPECTED.items():
+            with self.subTest(case=name):
+                p, written = run(os.path.join(CASES, name + ".yml"), self.cache)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertEqual(parse_output(written), want)
+
+    def test_bad_cases(self):
+        paths = sorted(glob.glob(os.path.join(CASES, "bad-*.yml")))
+        self.assertGreaterEqual(len(paths), 8)
+        for path in paths:
+            with self.subTest(case=os.path.basename(path)):
+                with open(path) as f:
+                    expects = [m.group(1).strip() for m in
+                               (re.match(r"^# expect: (.*)$", l) for l in f.read().split("\n")) if m]
+                self.assertTrue(expects, "no # expect: line")
+                p, written = run(path, self.cache)
+                self.assertEqual(p.returncode, 1, p.stderr)
+                self.assertEqual(written, "", "outputs written on failure")
+                for e in expects:
+                    self.assertIn(e, p.stderr)
+                for line in p.stderr.strip().split("\n"):
+                    self.assertTrue(line.startswith("::error::build.yml: "), line)
+
+    def test_two_errors_two_lines(self):
+        p, _ = run(os.path.join(CASES, "bad-two-errors.yml"), self.cache)
+        self.assertGreaterEqual(len(p.stderr.strip().split("\n")), 2)
+
+    def test_stdout_when_github_output_unset(self):
+        p, _ = run(os.path.join(CASES, "ok-spa-min.yml"), self.cache, github_output=False)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(parse_output(p.stdout), EXPECTED["ok-spa-min"])
+
+    def test_go_main_default_from_repo(self):
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, ".github"))
+            f = os.path.join(d, ".github", "build.yml")
+            with open(f, "w") as fh:
+                fh.write("family: go\n")
+            p, written = run(f, self.cache)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            o = parse_output(written)
+            self.assertEqual((o["go-main"], o["go-dir"], o["go"], o["node"]), ("./cmd/demo-repo", ".", "1.27", ""))
+            p, written = run(f, self.cache, {"GITHUB_REPOSITORY": ""})
+            self.assertEqual(parse_output(written)["go-main"], "./cmd/" + os.path.basename(d))
+        finally:
+            shutil.rmtree(d)
+
+    def test_file_problems(self):
+        d = tempfile.mkdtemp()
+        try:
+            p, _ = run(os.path.join(d, "nope.yml"), self.cache)
+            self.assertEqual(p.returncode, 1)
+            self.assertIn("::error::build.yml: <file>:", p.stderr)
+            for name, body in (("empty.yml", ""), ("comment.yml", "# only\n"), ("list.yml", "- a\n- b\n")):
+                f = os.path.join(d, name)
+                with open(f, "w") as fh:
+                    fh.write(body)
+                p, _ = run(f, self.cache)
+                self.assertEqual(p.returncode, 1, name)
+                self.assertRegex(p.stderr, r"::error::build\.yml: <(file|root)>:", name)
+        finally:
+            shutil.rmtree(d)
+
+    def test_yq_checksum_mismatch(self):
+        tc = tempfile.mkdtemp()
+        try:
+            yd = os.path.join(tc, "yq", YQ_VERSION)
+            os.makedirs(yd)
+            marker = os.path.join(tc, "ran")
+            fake = os.path.join(yd, "yq")
+            with open(fake, "w") as f:
+                f.write('#!/bin/sh\ntouch "%s"\necho \'{"family":"spa"}\'\n' % marker)
+            os.chmod(fake, 0o755)
+            p, written = run(os.path.join(CASES, "ok-spa-min.yml"), tc)
+            self.assertEqual(p.returncode, 1)
+            self.assertIn("::error::", p.stderr)
+            self.assertIn("checksum", p.stderr)
+            self.assertFalse(os.path.exists(marker), "tampered yq was executed")
+            self.assertEqual(written, "")
+        finally:
+            shutil.rmtree(tc)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

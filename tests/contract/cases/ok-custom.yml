@@ -1,0 +1,5 @@
+# expect: ok
+family: custom
+dockerfile: deploy/Dockerfile
+node: 24
+prisma: false

@@ -1,0 +1,3 @@
+# expect: prisma
+family: go
+prisma: true

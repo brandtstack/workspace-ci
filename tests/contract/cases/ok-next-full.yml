@@ -1,0 +1,17 @@
+# expect: ok
+family: next
+node: "24"
+prisma: true
+dotenvx: true
+integration: true
+favicon:
+  - public/favicon.svg
+  - public/icon.svg
+build-args:
+  NEXT_PUBLIC_SITE_URL: https://example.test
+  NEXT_PUBLIC_FLAG: "1"
+private-registry: true
+coolify-app:
+  - app.example.test
+  - app2.example.test
+smoke-args: "--path /health --port 3000"
