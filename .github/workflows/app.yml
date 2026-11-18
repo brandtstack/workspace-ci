@@ -516,16 +516,19 @@ jobs:
       # migrate: true. Proves the packaging of /opt/migrate (CLI, its deps, prisma.config.ts and its imports,
       # the schema) with no database and no extra image pull: `migrate status` against a port nothing listens
       # on must get as far as Prisma's can't-reach error, P1001. A MODULE_NOT_FOUND, a config load error or
-      # any other failure means the CLI could not even try. Measured on prisma 7.10.1:
+      # any other failure means the CLI could not even try. --network none: the CLI must find its schema engine
+      # in the image, never download it (it would, at every start, if the build skipped the engine install).
+      # Measured on prisma 7.10.1:
       #   Error: P1001: Can't reach database server at `127.0.0.1:1`
       # `ci / integration` already runs migrate deploy on the repo's migrations against a real Postgres.
       - name: Migrate CLI loads
         if: needs.verify.outputs.migrate == 'true'
         run: |
           set -uo pipefail
-          out="$(docker run --rm -e DATABASE_URL='postgresql://x:x@127.0.0.1:1/x' -e CHECKPOINT_DISABLE=1 \
-            --entrypoint /bin/sh ci-image:local -c 'cd /opt/migrate && node node_modules/prisma/build/index.js migrate status' 2>&1)"
-          rc=$?
+          # The step shell is `bash -e`: capture the expected failure instead of letting it end the script.
+          rc=0
+          out="$(docker run --rm --network none -e DATABASE_URL='postgresql://x:x@127.0.0.1:1/x' -e CHECKPOINT_DISABLE=1 \
+            --entrypoint /bin/sh ci-image:local -c 'cd /opt/migrate && node node_modules/prisma/build/index.js migrate status' 2>&1)" || rc=$?
           printf '%s\n' "$out"
           if [ "$rc" -eq 0 ]; then
             echo "::error::migrate status exited 0 against an unreachable database"

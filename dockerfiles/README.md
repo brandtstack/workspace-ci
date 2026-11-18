@@ -41,6 +41,8 @@ The repo must provide:
   - **Packaging.** `/opt/migrate` holds the Prisma CLI (and `dotenv`, if the lockfile has it), installed from
     the app's own `package-lock.json`: every package at its locked version, integrity-checked, and the build
     fails if any installed version differs (`next/migrate-pin.cjs`). No registry token reaches that install.
+    The schema engine is installed at build time too (npm 11 skips Prisma's postinstall, so the build runs it),
+    and "Migrate CLI loads" runs with `--network none` to prove nothing is downloaded at start.
     Only `prisma/schema.prisma`, `prisma/migrations` and `prisma.config.ts` are copied in, never the rest of
     `prisma/`. Nothing is fetched at start. The lockfile must be version 2 or 3.
   - **`prisma.config.ts` may import only `prisma/config` and `dotenv`**: they are the only modules in

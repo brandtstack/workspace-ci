@@ -189,6 +189,8 @@ class AppShape(unittest.TestCase):
         self.assertIn("migrate status", mig[0]["run"])
         self.assertIn("Error: P1001: Can't reach database server at", mig[0]["run"])
         self.assertIn("127.0.0.1:1", mig[0]["run"])
+        self.assertIn("--network none", mig[0]["run"])
+        self.assertIn("|| rc=$?", mig[0]["run"])  # the step shell is bash -e
         names = [s.get("name", "") for s in steps("image")]
         self.assertLess(names.index("Migrate CLI loads"), names.index("Tear down"))
         boot = [s for s in steps("image") if s.get("name") == "Boot and smoke test"][0]

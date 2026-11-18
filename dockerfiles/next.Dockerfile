@@ -54,8 +54,11 @@ RUN mkdir -p /opt/migrate
 # - Pinned by the app's own lockfile: a two-dependency package.json beside a copy of package-lock.json, so npm
 #   reuses every locked version and checks each tarball's integrity hash. The check after the install fails the
 #   build if any installed package differs from the app's lockfile.
-# - No registry token and no app .npmrc: prisma and dotenv are public. Install scripts stay on (the CLI's install
-#   fetches the engine for this platform), so they run with nothing secret in the environment.
+# - No registry token and no app .npmrc: prisma and dotenv are public, so nothing secret is in this environment.
+# - The schema engine: npm 11 skips install scripts not covered by `allowScripts`, and without @prisma/engines'
+#   postinstall the CLI downloads the engine into ~/.cache at run time, i.e. at every container start. So the
+#   postinstall runs explicitly here (it fetches the engine for this platform from Prisma's CDN and checks its
+#   hash). app.yml's "Migrate CLI loads" runs the CLI with --network none, which fails if anything is fetched.
 # - Only prisma/schema.prisma and prisma/migrations are copied, never the rest of prisma/ (seeds, dumps, .env).
 FROM node:24.22.3-alpine AS migrate-true
 WORKDIR /opt/migrate
@@ -66,6 +69,8 @@ RUN set -e; \
     printf 'registry=https://registry.npmjs.org/\n' > .npmrc; \
     npm install --omit=dev --no-audit --no-fund; \
     node /tmp/migrate-pin.cjs check app-lock.json; \
+    (cd node_modules/@prisma/engines && node scripts/postinstall.js); \
+    ls node_modules/@prisma/engines/schema-engine-* >/dev/null; \
     rm -rf .npmrc package.json package-lock.json app-lock.json /tmp/migrate-pin.cjs /root/.npm
 COPY prisma/schema.prisma /opt/migrate/prisma/schema.prisma
 COPY prisma/migrations /opt/migrate/prisma/migrations
