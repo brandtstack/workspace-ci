@@ -38,6 +38,9 @@ jobs:
       - name: Offline shape tests for app.yml
         run: |
           "$RUNNER_TEMP/venv/bin/python" tests/app/test_app_shape.py
+      - name: Offline run of app.yml's smoke-support steps (fake docker)
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" tests/app/test_app_steps.py
       - name: No shared Dockerfile runs a gate
         run: |
           "$RUNNER_TEMP/venv/bin/python" tests/dockerfiles/test_no_gate.py
@@ -67,6 +70,33 @@ jobs:
           echo "exit $rc: $err"
           [ "$rc" -eq 1 ] || { echo "::error::expected exit 1 from the reader"; exit 1; }
           case "$err" in *familly*) ;; *) echo "::error::stderr does not name familly"; exit 1 ;; esac
+
+  # Negative: app.yml's "Custom go image HEALTHCHECK" step run against a real image that declares none. The
+  # step's script is read out of app.yml itself, so this tests what the workflow runs.
+  custom-go-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: A custom go image without a HEALTHCHECK fails the gate
+        run: |
+          set -u
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --disable-pip-version-check PyYAML==6.0.3
+          # An empty image: no layers, so no HEALTHCHECK and nothing to run.
+          tar -cT /dev/null | docker import - ci-image:local
+          "$RUNNER_TEMP/venv/bin/python" - > "$RUNNER_TEMP/gate.sh" <<'PY'
+          import yaml
+          wf = yaml.safe_load(open(".github/workflows/app.yml"))
+          print([s for s in wf["jobs"]["image"]["steps"] if s.get("name") == "Custom go image HEALTHCHECK"][0]["run"])
+          PY
+          rc=0
+          out="$(bash -eo pipefail "$RUNNER_TEMP/gate.sh" 2>&1)" || rc=$?
+          echo "exit $rc: $out"
+          [ "$rc" -eq 1 ] || { echo "::error::expected exit 1 from the gate"; exit 1; }
+          case "$out" in *"custom go image has no HEALTHCHECK"*) ;; *) echo "::error::output does not name the missing HEALTHCHECK"; exit 1 ;; esac
 
   # The fixture apps run through the real contract workflow, same-repo (so the ref check applies).
   # Public repo: GitHub-hosted runners only, never the Acer. app.yml's publish steps are off in this repo.

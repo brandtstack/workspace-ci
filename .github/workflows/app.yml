@@ -62,6 +62,9 @@ jobs:
       go-main:          ${{ steps.contract.outputs.go-main }}
       go-dir:           ${{ steps.contract.outputs.go-dir }}
       migrate:          ${{ steps.contract.outputs.migrate }}
+      smoke-env-b64:    ${{ steps.contract.outputs.smoke-env-b64 }}
+      smoke-postgres:   ${{ steps.contract.outputs.smoke-postgres }}
+      smoke-random:     ${{ steps.contract.outputs.smoke-random }}
     defaults:
       run:
         working-directory: ${{ inputs.path }}
@@ -432,9 +435,63 @@ jobs:
             exit 1
           fi
 
+      # smoke-env / smoke-random (contract): one --env-file for the smoke container, mode 600, never printed.
+      # smoke-env arrives as base64 of its K=V lines, so a value with spaces or quotes survives byte for byte;
+      # each smoke-random NAME:N becomes NAME=<N fresh random bytes as base64>. Always runs (an empty file is
+      # a valid --env-file), so the docker run lines below never branch on it. Removed in Tear down.
+      - name: Prepare the smoke env file
+        env:
+          SMOKE_ENV_B64: ${{ needs.verify.outputs.smoke-env-b64 }}
+          SMOKE_RANDOM: ${{ needs.verify.outputs.smoke-random }}
+        run: |
+          set -euo pipefail
+          set -f
+          umask 077
+          : > "$RUNNER_TEMP/smoke.env"
+          chmod 600 "$RUNNER_TEMP/smoke.env"
+          if [ -n "$SMOKE_ENV_B64" ]; then
+            printf '%s' "$SMOKE_ENV_B64" | base64 -d >> "$RUNNER_TEMP/smoke.env"
+          fi
+          # Unquoted on purpose (globbing off): space-separated NAME:BYTES pairs, validated by contract/validate.jq.
+          for entry in $SMOKE_RANDOM; do
+            name="${entry%%:*}"
+            bytes="${entry##*:}"
+            printf '%s=%s\n' "$name" "$(head -c "$bytes" /dev/urandom | base64 | tr -d '\n')" >> "$RUNNER_TEMP/smoke.env"
+          done
+          echo "smoke env file written ($(wc -l < "$RUNNER_TEMP/smoke.env" | tr -d ' ') variables)"
+
+      # smoke-postgres (contract): a throwaway Postgres on a private network beside the smoke container, for apps
+      # that cannot boot without a database. URL: postgresql://smoke:smoke@smoke-pg:5432/<name>?sslmode=disable.
+      # No trap: the smoke container outlives this step, so Tear down (always) removes smoke-pg and smoke-net.
+      - name: Start the smoke Postgres
+        if: needs.verify.outputs.smoke-postgres != ''
+        env:
+          SMOKE_PG: ${{ needs.verify.outputs.smoke-postgres }}
+        run: |
+          set -euo pipefail
+          set -f
+          docker network create smoke-net
+          docker run -d --name smoke-pg --network smoke-net -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke postgres:16.15-alpine
+          # -h 127.0.0.1: the image's init-time server listens on the socket only, so only the real one answers over TCP.
+          ready=0
+          for _ in $(seq 1 30); do
+            if docker exec smoke-pg pg_isready -h 127.0.0.1 -U smoke -q; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" != 1 ]; then
+            echo "::error::the smoke Postgres was not ready after 30 s"
+            docker logs smoke-pg || true
+            exit 1
+          fi
+          for db in $SMOKE_PG; do
+            docker exec smoke-pg createdb -U smoke "$db"
+          done
+          echo "smoke Postgres ready: $SMOKE_PG"
+
       - name: Boot and smoke test
         env:
           SMOKE_ARGS: ${{ needs.verify.outputs.smoke-args }}
+          SMOKE_PG: ${{ needs.verify.outputs.smoke-postgres }}
           FAMILY: ${{ needs.verify.outputs.family }}
           DOTENVX: ${{ needs.verify.outputs.dotenvx }}
           MIGRATE: ${{ needs.verify.outputs.migrate }}
@@ -445,14 +502,16 @@ jobs:
           set -f
           # migrate: true images run `prisma migrate deploy` at start; the smoke has no database.
           if [ "$MIGRATE" = true ]; then SMOKE_ARGS="-e SKIP_MIGRATIONS=1 ${SMOKE_ARGS}"; fi
+          # smoke-postgres: the app container joins the network the throwaway Postgres is on.
+          if [ -n "$SMOKE_PG" ]; then SMOKE_ARGS="--network smoke-net ${SMOKE_ARGS}"; fi
           if [ "$FAMILY" = next ] && [ "$DOTENVX" = true ]; then
             # A dotenvx image's ENTRYPOINT wrapper needs the private key, which CI never has, so the smoke
             # bypasses it and runs the image CMD (start.sh) directly (built in, not a contract field).
             # shellcheck disable=SC2086
-            docker run -d --name smoke -p 8080:80 $SMOKE_ARGS --entrypoint /bin/sh ci-image:local /app/start.sh
+            docker run -d --name smoke -p 8080:80 --env-file "$RUNNER_TEMP/smoke.env" $SMOKE_ARGS --entrypoint /bin/sh ci-image:local /app/start.sh
           else
             # shellcheck disable=SC2086
-            docker run -d --name smoke -p 8080:80 $SMOKE_ARGS ci-image:local
+            docker run -d --name smoke -p 8080:80 --env-file "$RUNNER_TEMP/smoke.env" $SMOKE_ARGS ci-image:local
           fi
           ok=0
           for _ in $(seq 1 30); do
@@ -513,6 +572,34 @@ jobs:
           fi
           echo "image HEALTHCHECK healthy"
 
+      # custom + go images: no binary name to exec (each repo's is its own), so the gate is on the image itself:
+      # it must declare a HEALTHCHECK (Coolify's check is off for go, so this is the only one) and the smoke
+      # container must reach healthy under it.
+      - name: Custom go image HEALTHCHECK
+        if: needs.verify.outputs.family == 'custom' && needs.verify.outputs.go != ''
+        run: |
+          set -euo pipefail
+          test_cmd="$(docker image inspect --format '{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Test}}{{end}}' ci-image:local)"
+          echo "Config.Healthcheck.Test=${test_cmd}"
+          case "$test_cmd" in
+            ""|null|"[]"|'["NONE"]')
+              echo "::error::custom go image has no HEALTHCHECK (dockerfiles/README.md \"custom\": an exec-form HEALTHCHECK is required for go)"
+              exit 1 ;;
+          esac
+          status=""
+          for _ in $(seq 1 30); do
+            status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' smoke)"
+            [ "$status" = healthy ] && break
+            sleep 1
+          done
+          if [ "$status" != healthy ]; then
+            echo "::error::State.Health.Status is '${status}' after 30 s, want healthy"
+            docker inspect --format '{{json .State.Health}}' smoke || true
+            docker logs smoke || true
+            exit 1
+          fi
+          echo "image HEALTHCHECK healthy"
+
       # migrate: true. Proves the packaging of /opt/migrate (CLI, its deps, prisma.config.ts and its imports,
       # the schema) with no database and no extra image pull: `migrate status` against a port nothing listens
       # on must get as far as Prisma's can't-reach error, P1001. A MODULE_NOT_FOUND, a config load error or
@@ -557,7 +644,10 @@ jobs:
 
       - name: Tear down
         if: always()
-        run: docker rm -f smoke || true
+        run: |
+          docker rm -f smoke smoke-pg || true
+          docker network rm smoke-net || true
+          rm -f "$RUNNER_TEMP/smoke.env"
 
       # Push happens last, so a smoke failure means nothing reaches the registry. Both steps are off in
       # workspace-ci itself (the fixture matrix builds and smokes but must publish nothing).
