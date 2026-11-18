@@ -1,0 +1,11 @@
+family: custom
+dockerfile: Dockerfile
+go: "1.27"
+# The binary refuses to start without both databases and a 32-byte FIXTURE_KEY, so a green smoke proves
+# smoke-postgres, smoke-env and smoke-random all reached the container.
+smoke-postgres: [one, two]
+smoke-env:
+  DB_ONE_URL: "postgresql://smoke:smoke@smoke-pg:5432/one?sslmode=disable"
+  DB_TWO_URL: "postgresql://smoke:smoke@smoke-pg:5432/two?sslmode=disable"
+smoke-random:
+  FIXTURE_KEY: 32

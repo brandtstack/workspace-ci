@@ -1,0 +1,10 @@
+{
+  "name": "fixture-custom-node",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "typecheck": "node --check src/server.js && node --check src/main.js",
+    "test": "node --test",
+    "verify": "npm run typecheck && npm run test"
+  }
+}
