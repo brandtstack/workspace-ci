@@ -51,15 +51,16 @@ ROOT="$(cd "$(dirname "$SRC")/.." && pwd -P)"
 OUT="$("$ROOT/contract/read.sh" "$DIR/.github/build.yml")" || exit 1
 delim=""
 key=""
+first=0
 while IFS= read -r line || [ -n "$line" ]; do
   if [ -n "$delim" ]; then
     if [ "$line" = "$delim" ]; then delim=""
     else
       cur="C_${key//-/_}"
-      if [ -z "${!cur}" ]; then printf -v "$cur" '%s' "$line"; else printf -v "$cur" '%s\n%s' "${!cur}" "$line"; fi
+      if [ "$first" = 1 ]; then printf -v "$cur" '%s' "$line"; first=0; else printf -v "$cur" '%s\n%s' "${!cur}" "$line"; fi
     fi
   elif [[ "$line" =~ ^([a-z-]+)\<\<(.+)$ ]]; then
-    key="${BASH_REMATCH[1]}"; delim="${BASH_REMATCH[2]}"; printf -v "C_${key//-/_}" '%s' ""
+    key="${BASH_REMATCH[1]}"; delim="${BASH_REMATCH[2]}"; printf -v "C_${key//-/_}" '%s' ""; first=1
   elif [[ "$line" =~ ^([a-z-]+)=(.*)$ ]]; then
     printf -v "C_${BASH_REMATCH[1]//-/_}" '%s' "${BASH_REMATCH[2]}"
   fi
@@ -68,7 +69,8 @@ $OUT
 EOT
 
 FAMILY="$C_family"
-NAME="$(basename "$DIR" | tr '[:upper:]' '[:lower:]')"
+NAME="$(basename "$DIR" | tr '[:upper:]' '[:lower:]' | LC_ALL=C sed 's/[^a-z0-9._-]/-/g')"
+[ -n "${NAME//-/}" ] || die "cannot derive an image name from the directory name: $(basename "$DIR")"
 TAG="localhost/$NAME:dev"
 
 if [ "$C_private_registry" = true ] && [ -z "${NPM_TOKEN:-}" ]; then

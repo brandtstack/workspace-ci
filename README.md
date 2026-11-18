@@ -351,7 +351,7 @@ podman only: it reads the repo's `build.yml`, runs `npm run verify` (or `make ve
 `localhost/<repo>:dev` with the same Dockerfile, target and build args, then boots it with
 `-p 127.0.0.1:8080:80` and polls `/healthz` for 60 s. It exits non-zero on any failure and prints the
 container log. A contract with `private-registry: true` needs `NPM_TOKEN` exported. `BUILD_IMAGE_PORT`
-changes the host port. Tests (fake podman): `tests/build-image/test_build_image.py`.
+changes the host port and `BUILD_IMAGE_SMOKE_TIMEOUT` the 60 s wait. Tests (fake podman): `tests/build-image/test_build_image.py`.
 
 ## Versioning
 

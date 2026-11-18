@@ -148,8 +148,7 @@ class BuildImage(unittest.TestCase):
         self.assertIn("--build-arg NODE=24", b)
         self.assertIn("--build-arg PRISMA=true", b)
         self.assertNotIn("GO=", b)
-        self.assertTrue(b.rstrip().endswith("-t localhost/demo-app:dev " + os.path.realpath(os.path.join(self.tmp, "demo-App"))) or
-                        "-t localhost/demo-app:dev" in b)
+        self.assertTrue(b.rstrip().endswith(" " + os.path.realpath(os.path.join(self.tmp, "demo-App"))))
         want = base64.b64encode(
             b"NEXT_PUBLIC_SITE_URL=https://example.test\nNEXT_PUBLIC_FLAG=1").decode()
         self.assertIn("--build-arg PUBLIC_BUILD_ENV_B64=" + want, b)
@@ -194,6 +193,16 @@ class BuildImage(unittest.TestCase):
     def test_tag_is_lowercased_repo_basename(self):
         self.run_bi("--no-verify", self.repo("ok-spa-min", name="Demo-APP"))
         self.assertIn("-t localhost/demo-app:dev", self.argv(self.calls("podman", "build")[0]))
+
+    def test_tag_sanitizes_odd_dir_names(self):
+        self.run_bi("--no-verify", "--no-smoke", self.repo("ok-spa-min", name="My App+v2"))
+        b = self.argv(self.calls("podman", "build")[0])
+        self.assertIn("-t localhost/my-app-v2:dev ", b)
+
+    def test_unusable_dir_name_dies(self):
+        r = self.run_bi("--no-verify", "--no-smoke", self.repo("ok-spa-min", name="+++"))
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.calls("podman"), [])
 
     def test_smoke_run_flags(self):
         r = self.run_bi("--no-verify", self.repo("ok-next-full"), env={"NPM_TOKEN": "x"})
