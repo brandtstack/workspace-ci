@@ -38,6 +38,9 @@ jobs:
       - name: Offline shape tests for app.yml
         run: |
           "$RUNNER_TEMP/venv/bin/python" tests/app/test_app_shape.py
+      - name: Tests for scripts/build-image (fake podman)
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" tests/build-image/test_build_image.py
       # Renovate reads default.json (the shared preset) and renovate.json. Named explicitly: with no
       # arguments the validator checks renovate.json only. --strict makes a config that Renovate would
       # have to auto-migrate fail the job. It does not resolve `extends` presets, so a misspelt preset
