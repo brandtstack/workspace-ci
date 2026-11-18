@@ -63,8 +63,17 @@ exercises both.
 ## go (`go.Dockerfile`)
 
 Build args `GO` (major.minor, e.g. `1.27`), `GO_MAIN` (main package, e.g. `./cmd/x`), `GO_DIR`
-(module directory, `.` or e.g. `server`). The app must read `PORT` (80 in the image) and serve
-`/healthz`. Distroless nonroot, no shell and no HEALTHCHECK.
+(module directory, `.` or e.g. `server`). Distroless nonroot (`65532:65532`), no shell.
+
+The app must:
+- Listen on `PORT` (80 in the image). A listen address under any other name is not read.
+- Serve `/healthz`.
+- Implement `<binary> healthcheck`: GET `http://127.0.0.1:$PORT/healthz` with a 2 s timeout, exit 0 on 200,
+  1 otherwise. The image `HEALTHCHECK` runs it in exec form (`/app healthcheck`, every 10 s, 3 s timeout,
+  5 s start period, 3 retries), and the app.yml smoke requires it to exit 0 and the container to turn
+  `healthy` within 30 s.
+- Keep persistent files under `/data`. Every go image ships it empty and owned by `65532:65532`; a named
+  volume mounted there takes that ownership on first mount.
 
 ## Not supported yet (step 3 extends the files if a pilot needs it)
 
@@ -72,6 +81,3 @@ Build args `GO` (major.minor, e.g. `1.27`), `GO_MAIN` (main package, e.g. `./cmd
 - Prisma migrations at start (`prisma migrate deploy`: needs the Prisma CLI, `prisma/`, `prisma.config.ts`
   and an entrypoint that chains before `node server.js`, also under dotenvx); insta-web and brl-intraweb
   need it, and spec step 3 designs it.
-- go: a writable data directory (cc-usage `/data`, owned by 65532).
-- go: apps that read a listen address other than `PORT` must switch to `PORT` (cc-usage `CC_USAGE_LISTEN`).
-- go: a `healthcheck` subcommand and image `HEALTHCHECK`, only if Coolify needs a tool in the image.
