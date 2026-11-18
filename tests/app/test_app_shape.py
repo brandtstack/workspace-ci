@@ -179,6 +179,48 @@ class AppShape(unittest.TestCase):
         for job in ("verify", "integration"):
             self.assertEqual(JOBS[job]["defaults"]["run"]["working-directory"], "${{ inputs.path }}")
 
+    def test_ref_check_after_checkout_in_both_jobs(self):
+        for job in ("verify", "image"):
+            ss = steps(job)
+            i = [k for k, x in enumerate(ss) if x.get("with", {}).get("path") == ".ws-ci"][0]
+            chk = ss[i + 2]
+            self.assertEqual(chk["name"], "Check the workflow ref")
+            self.assertNotIn("${{", chk["run"])
+            for k in ("WF_REPO", "WF_SHA", "RUN_REPO", "RUN_SHA"):
+                self.assertIn(k, chk["env"])
+            self.assertEqual(chk["env"]["WF_SHA"], "${{ job.workflow_sha }}")
+            self.assertEqual(chk["env"]["RUN_SHA"], "${{ github.sha }}")
+            self.assertIn('"$WF_SHA" != "$RUN_SHA"', chk["run"])
+            self.assertIn("exit 1", chk["run"])
+            self.assertIn("echo", chk["run"].split("if ")[0])
+
+    def test_image_contract_step(self):
+        ss = steps("image")
+        names = [s.get("name", "") for s in ss]
+        i = [k for k, n in enumerate(names) if n.startswith("Image contract")]
+        self.assertEqual(len(i), 1)
+        build = [k for k, s in enumerate(ss) if s.get("uses", "").startswith("docker/build-push-action@")][0]
+        smoke = names.index("Boot and smoke test")
+        self.assertTrue(build < i[0] < smoke)
+        run = ss[i[0]]["run"]
+        self.assertIn("ci-image:local", run)
+        self.assertIn("Config.User", run)
+        self.assertIn('0:*', run)
+        self.assertIn("root", run)
+        self.assertIn('\'{"80/tcp":{}}\'', run)
+        self.assertNotIn("if", ss[i[0]])  # every caller, not fixture-only
+
+    def test_fixture_check_is_workspace_ci_only(self):
+        ss = steps("image")
+        fx = [s for s in ss if s.get("name") == "Fixture page check"]
+        self.assertEqual(len(fx), 1)
+        self.assertEqual(fx[0]["if"], "github.repository == 'brandtstack/workspace-ci'")
+        self.assertIn("fixture-check.sh", fx[0]["run"])
+        self.assertIn("http://127.0.0.1:8080", fx[0]["run"])
+        self.assertNotIn("${{", fx[0]["run"])
+        names = [s.get("name", "") for s in ss]
+        self.assertTrue(names.index("Boot and smoke test") < names.index("Fixture page check") < names.index("Tear down"))
+
 
 if __name__ == "__main__":
     unittest.main()
