@@ -319,7 +319,9 @@ root even when the Dockerfile is in a subdirectory. A `deploy/.dockerignore` is 
 
 ## App contract (`app.yml`)
 
-**Not yet adopted, pilots in spec step 3.** No repo calls `app.yml` yet.
+**Adopted by the three pilots (spec step 3, 2026-11-18):** tilde (`spa`), cc-usage (`go`) and insta-web
+(`next`), each with `release` in contract mode. The rest of the fleet still calls `node-ci.yml` / `go-ci.yml`
+until spec step 4.
 
 One file, `.github/build.yml` in the app repo, is the whole build configuration. `app.yml` reads it with
 `contract/read.sh` and runs `verify`, `integration` and `image` from it. The keys and their rules are in
