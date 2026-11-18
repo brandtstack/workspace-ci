@@ -57,9 +57,9 @@ ensure_yq() {
 
 ensure_yq
 
-# YAML floats (node: 24.0, go: 1.30) are wrapped in a {"!!float": n} object: yq's JSON output would
+# YAML floats below the root (node: 24.0, go: 1.30) are wrapped in a {"!!float": n} object: yq's JSON output would
 # otherwise normalise them (24.0 -> 24, 1.30 -> 1.3) and the type check could not see the difference.
-JSON="$("$YQ" -o=json '(.. | select(tag == "!!float")) |= {"!!float": .}' "$FILE" 2>/dev/null)" || die "<file>: not valid YAML"
+JSON="$("$YQ" -o=json '(.. | select(tag == "!!float" and (path | length) > 0)) |= {"!!float": .}' "$FILE" 2>/dev/null)" || die "<file>: not valid YAML"
 [ -n "$JSON" ] || JSON=null
 [ "$(printf '%s' "$JSON" | jq -s length)" -le 1 ] || die "<file>: more than one YAML document (only one is allowed)"
 
