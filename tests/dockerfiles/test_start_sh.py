@@ -5,6 +5,7 @@ Run: python3 tests/dockerfiles/test_start_sh.py
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -154,14 +155,70 @@ class DockerfileWiring(unittest.TestCase):
             self.assertIn('-- "$@"', f.read())
 
     def test_migrate_true_copies_only_schema_and_migrations(self):
-        copies = [l for l in self.stage("migrate-true").splitlines() if l.startswith("COPY ") and "prisma" in l]
-        self.assertEqual(sorted(copies), sorted([
-            "COPY prisma/schema.prisma /opt/migrate/prisma/schema.prisma",
-            "COPY prisma/migrations /opt/migrate/prisma/migrations",
-            "COPY prisma.config.ts /opt/migrate/prisma.config.ts",
-        ]))
-        self.assertNotIn("npm_token", self.stage("migrate-true"))
+        stage = self.stage("migrate-true")
+        # No COPY of the schema any more: a RUN with a bind mount picks schema.prisma or schema/ (multi-file).
+        copies = [l for l in stage.splitlines() if l.startswith("COPY ") and "prisma" in l]
+        self.assertEqual(copies, ["COPY prisma.config.ts /opt/migrate/prisma.config.ts"])
+        self.assertIn("RUN --mount=type=bind,source=prisma,target=/src/prisma", stage)
+        self.assertIn("prisma: need prisma/schema.prisma or prisma/schema/", stage)
+        self.assertNotIn("npm_token", stage)
 
+
+class MigratePrismaCopy(unittest.TestCase):
+    """Runs the migrate-true stage's schema-copy script for real, with /src/prisma and /opt/migrate pointed at
+    temp dirs (the bind mount is BuildKit's; the script is plain sh)."""
+
+    @classmethod
+    def script(cls):
+        with open(os.path.join(ROOT, "dockerfiles", "next.Dockerfile")) as f:
+            body = f.read().split(" AS migrate-true\n", 1)[1].split("\nFROM ", 1)[0]
+        m = re.search(r"^RUN --mount=type=bind,source=prisma,target=/src/prisma ((?:.*\\\n)*.*)$", body, re.M)
+        assert m, "bind-mount RUN not found"
+        return m.group(1).replace("\\\n", "\n")
+
+    def run_copy(self, files):
+        d = tempfile.mkdtemp()
+        try:
+            src, dst = os.path.join(d, "src", "prisma"), os.path.join(d, "opt", "migrate")
+            os.makedirs(src)
+            os.makedirs(dst)
+            for rel in files:
+                path = os.path.join(src, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write("x")
+            script = self.script().replace("/src/prisma", src).replace("/opt/migrate", dst)
+            r = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+            got = sorted(os.path.relpath(os.path.join(root, n), dst)
+                         for root, _, names in os.walk(dst) for n in names)
+            return r, got
+        finally:
+            shutil.rmtree(d)
+
+    def test_single_file_schema(self):
+        r, got = self.run_copy(["schema.prisma", "migrations/1_init/migration.sql", "seed.ts", ".env"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(got, ["prisma/migrations/1_init/migration.sql", "prisma/schema.prisma"])
+
+    def test_multi_file_schema_dir(self):
+        r, got = self.run_copy(["schema/a.prisma", "schema/b.prisma", "migrations/1_init/migration.sql", "dump.sql"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(got, ["prisma/migrations/1_init/migration.sql", "prisma/schema/a.prisma", "prisma/schema/b.prisma"])
+
+    def test_neither_fails_with_the_message(self):
+        r, got = self.run_copy(["migrations/1_init/migration.sql"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("prisma: need prisma/schema.prisma or prisma/schema/", r.stderr)
+        self.assertEqual(got, [])
+
+    def test_both_fail_with_the_message(self):
+        r, _ = self.run_copy(["schema.prisma", "schema/a.prisma", "migrations/1_init/migration.sql"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("prisma: need prisma/schema.prisma or prisma/schema/", r.stderr)
+
+    def test_missing_migrations_fails(self):
+        r, _ = self.run_copy(["schema.prisma"])
+        self.assertNotEqual(r.returncode, 0)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
