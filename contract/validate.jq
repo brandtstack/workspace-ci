@@ -71,7 +71,12 @@ def bools: ["prisma","dotenvx","integration","private-registry"];
        else empty end),
       (if has("coolify-app") then
          (if ($c["coolify-app"] | nonempty) or (($c["coolify-app"] | type) == "array" and ($c["coolify-app"] | length) > 0 and ($c["coolify-app"] | all(nonempty)))
-          then empty else "coolify-app: must be a string or a non-empty list of strings" end)
+          then
+            # Coolify uuids (lowercase alphanumerics). The value is interpolated into authenticated
+            # Coolify API URLs by release.yml, so nothing path- or query-shaped may pass.
+            ([$c["coolify-app"]] | flatten | map(select(test("\\A[a-z0-9]{8,64}\\z") | not)) | .[]
+             | "coolify-app: \(.) is not a Coolify uuid (8-64 lowercase letters and digits)")
+          else "coolify-app: must be a string or a non-empty list of strings" end)
        else empty end),
       (if has("smoke-args") and ($c["smoke-args"] | isstr | not) then "smoke-args: must be a string" else empty end),
       # go-only keys

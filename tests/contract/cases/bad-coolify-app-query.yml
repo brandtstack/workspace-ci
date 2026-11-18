@@ -1,0 +1,5 @@
+# expect: coolify-app
+family: spa
+coolify-app:
+  - abcdefgh1234
+  - "abcdefgh1234&force=true"

@@ -344,6 +344,33 @@ jobs:
       runner: '["self-hosted","priv-ci"]'
 ```
 
+Release (on push to main) stays in the caller, in **contract mode**: `release.yml` reads the Coolify app
+from `build.yml`'s `coolify-app` (exactly one, for now), and before deploying writes the app's
+`ports_exposes` (80) and health check from the family: next/spa get Coolify's http check on
+`127.0.0.1:80/healthz`; go keeps Coolify's check off and relies on the image's own `HEALTHCHECK`
+(distroless has no shell for Coolify's `CMD-SHELL` check). The values are read back before the deploy;
+hand edits in Coolify are overwritten on every release. The sync runs before the image is promoted
+and the tag pushed, so a refused or mismatched sync leaves nothing minted and a re-run retries it.
+`coolify-app` must be a Coolify uuid (8-64 lowercase letters and digits).
+
+```yaml
+  release:
+    if: github.event_name == 'push'
+    needs: [ci]
+    uses: brandtstack/workspace-ci/.github/workflows/release.yml@<40-hex> # main
+    permissions: { contents: write, packages: write, pull-requests: read }
+    with:
+      runner: '["self-hosted","priv-ci"]'
+      contract: true          # no coolify-app-uuid: build.yml names the app
+    secrets:
+      COOLIFY_TOKEN:           ${{ secrets.COOLIFY_TOKEN }}
+      CF_ACCESS_CLIENT_ID:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+```
+
+Rolling back across a port change (an app's first contract release moved it to 80) is not a plain tag
+swap: PATCH `ports_exposes` and the health check back to the old values first.
+
 Repo-specific image probes do not carry over: tilde's required `headers` job builds the repo's own
 Dockerfile, so on adoption it must move to pulling `:sha-<head>` after `ci / image` instead (spec step 3
 handles it).

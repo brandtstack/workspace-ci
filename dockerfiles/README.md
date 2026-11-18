@@ -45,6 +45,21 @@ The repo must provide `nginx.conf` (a `server` block, copied to `conf.d/default.
 copied to `/etc/nginx/snippets/`, but the shared `healthz.conf` is copied after it and always wins over an app file of that name. The shipped main `nginx.conf` has no `user` directive and keeps the
 pid and temp files in `/tmp`; binding 80 as non-root relies on `ip_unprivileged_port_start=0`.
 
+Two optional subdirectories of `nginx/` handle values known only at start (tilde's `/health` version):
+- `nginx/entrypoint.d/*.sh` are copied to `/docker-entrypoint.d/` (mode 0755). The stock entrypoint runs
+  them as `nginx` before nginx starts and **aborts, so nginx never starts, if one exits non-zero**: a hook
+  must always `exit 0`. Every file there is copied executable, so put only hooks in it.
+- **A hook writes config that nginx `include`s, so it must write only values it has validated**
+  (an allow-list of characters, as tilde's `10-app-version.sh` does with `tr -cd 'A-Za-z0-9._+-'`):
+  no quotes, semicolons, braces or newlines from the environment. `/etc/nginx/runtime/` is writable by
+  the serving user in every spa image; this is the accepted cost of start-time values.
+- `/etc/nginx/runtime/` is owned by `nginx` and is the only writable config path. `nginx/runtime/` holds
+  its shipped defaults, so an `include /etc/nginx/runtime/<file>` never names a missing file. On a
+  read-only root fs a hook's write fails and the default stays.
+
+(Both also land under `/etc/nginx/snippets/` with the rest of `nginx/`; harmless.) The spa fixture
+exercises both.
+
 ## go (`go.Dockerfile`)
 
 Build args `GO` (major.minor, e.g. `1.27`), `GO_MAIN` (main package, e.g. `./cmd/x`), `GO_DIR`
@@ -57,7 +72,6 @@ Build args `GO` (major.minor, e.g. `1.27`), `GO_MAIN` (main package, e.g. `./cmd
 - Prisma migrations at start (`prisma migrate deploy`: needs the Prisma CLI, `prisma/`, `prisma.config.ts`
   and an entrypoint that chains before `node server.js`, also under dotenvx); insta-web and brl-intraweb
   need it, and spec step 3 designs it.
-- spa: `/docker-entrypoint.d/*.sh` scripts run as `nginx` and cannot write under `/etc/nginx`.
 - go: a writable data directory (cc-usage `/data`, owned by 65532).
 - go: apps that read a listen address other than `PORT` must switch to `PORT` (cc-usage `CC_USAGE_LISTEN`).
 - go: a `healthcheck` subcommand and image `HEALTHCHECK`, only if Coolify needs a tool in the image.

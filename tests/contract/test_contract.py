@@ -40,12 +40,12 @@ EXPECTED = {
         favicon="public/favicon.svg\npublic/icon.svg",
         **{"build-args": "NEXT_PUBLIC_SITE_URL=https://example.test\nNEXT_PUBLIC_FLAG=1",
            "private-registry": "true",
-           "coolify-app": "app.example.test\napp2.example.test",
+           "coolify-app": "app0example0test\napp2example0test",
            "smoke-args": "--path /health --port 3000"}),
     "ok-spa-min": base(family="spa", dockerfile=dockerfile("spa"), node="24"),
     "ok-go-subdir": base(
         family="go", dockerfile=dockerfile("go"), go="1.27",
-        **{"coolify-app": "usage.example.test", "go-main": "./cmd/usage-server", "go-dir": "server"}),
+        **{"coolify-app": "usageapp0example0test", "go-main": "./cmd/usage-server", "go-dir": "server"}),
     "ok-multiline": base(
         family="next", dockerfile=dockerfile("next"), node="24",
         favicon="a.svg\nb.svg\nc.svg",

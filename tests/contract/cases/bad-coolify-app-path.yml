@@ -1,0 +1,3 @@
+# expect: coolify-app
+family: spa
+coolify-app: "../servers/abcdefgh"

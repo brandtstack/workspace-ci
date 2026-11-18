@@ -39,6 +39,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
                 "app_tag": str, "deploy": dict}"""
     script = {}
     polls = 0
+    app = {}        # what the stub "stores" from settings PATCHes, served back on GET
+    patches = []    # every PATCH body received, decoded
 
     def log_message(self, *a):
         pass
@@ -64,12 +66,28 @@ class Stub(http.server.BaseHTTPRequestHandler):
             return self.reply(code, {"status": status, "deployment_uuid": "dep-1",
                                      "application": {"envs": [{"key": "X", "value": FX["PLANTED"]}]}})
         if self.path.startswith("/api/v1/applications/"):
-            return self.reply(s.get("app_code", 200), {"docker_registry_image_tag": s.get("app_tag", VER), "planted": FX["PLANTED"]})
+            return self.reply(s.get("app_code", 200), dict(Stub.app, docker_registry_image_tag=s.get("app_tag", VER), planted=FX["PLANTED"]))
         if self.path.startswith("/api/v1/deploy"):
             return self.reply(200, s.get("deploy", {"deployments": [{"message": "queued", "deployment_uuid": "dep-1"}]}))
         self.reply(404, {})
 
     do_POST = do_GET
+
+    def do_PATCH(self):
+        s = Stub.script
+        body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
+        Stub.patches.append(body)
+        code = s.get("patch_code", 200)
+        if code == 200:
+            for k, v in body.items():
+                if k in s.get("drop", ()):
+                    continue
+                if s.get("as_numbers") and isinstance(v, bool):
+                    v = int(v)
+                elif s.get("as_numbers") and k.endswith("port") and isinstance(v, str):
+                    v = int(v)
+                Stub.app[k] = v
+        return self.reply(code, {"message": "nope"} if code != 200 else {"uuid": "app-1", "planted": FX["PLANTED"]})
 
 
 def step(name, port):
@@ -95,7 +113,7 @@ def git_repo(base, tag=None, newer=None):
 
 
 def run(port, name, *, env=None, releases=None, fail=None, fail_once=None, script=None, tag=None, newer=None):
-    Stub.script, Stub.polls = dict(script or {}), 0
+    Stub.script, Stub.polls, Stub.app, Stub.patches = dict(script or {}), 0, {}, []
     base = tempfile.mkdtemp()
     try:
         state = os.path.join(base, "gh-state.json")
@@ -298,6 +316,70 @@ def rows(port):
     add("response file never outlives the step (failure path)", "coolify.json" not in r["left"], str(r["left"]))
     r = run(port, W, releases=deploying, script={"deployments": [(200, "finished")]})
     add("response file never outlives the step (success path)", "coolify.json" not in r["left"], str(r["left"]))
+
+    # ---- contract mode: target and Coolify sync (spec D6) ----
+    add("order: contract read -> target -> guard; head -> Sync -> promote -> tag -> APP_VERSION -> Point -> Deploy (sync failure leaves nothing minted)",
+        ix("Read the build contract") < ix("Resolve the Coolify target") < ix("Skip if this commit")
+        and ix("Resolve the PR head SHA") < ix("Sync Coolify from build.yml") < ix("Promote the tested image") < ix("Push git tag")
+        < ix("Set APP_VERSION") < ix("Point the Coolify") < ix("Deploy"),
+        " | ".join(names))
+    sy = steps["Sync Coolify from build.yml"]["if"]
+    add("Sync is gated on contract mode, guard skip == 'false', publish-image and a target",
+        all(x in sy for x in ("inputs.contract", "steps.guard.outputs.skip == 'false'", "inputs.publish-image",
+                              "steps.target.outputs.uuid != ''")), sy)
+    for n in ("Require the workflow's own ref", "Check out workspace-ci at its own ref", "Move workspace-ci out of the workspace", "Read the build contract"):
+        add("contract-only step: %s" % n, steps[n].get("if") == "inputs.contract", str(steps[n].get("if")))
+    add("target step always runs (legacy callers read it too)", "if" not in steps["Resolve the Coolify target"], "")
+    raw = open(WORKFLOW).read().split("jobs:", 1)[1]
+    add("no Coolify step reads the coolify-app-uuid input directly (only the target step does)",
+        raw.count("inputs.coolify-app-uuid") == 1, str(raw.count("inputs.coolify-app-uuid")))
+
+    T = "Resolve the Coolify target"
+    r = run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "legacy-1", "APPS": "", "FAMILY": ""})
+    add("target legacy: the input, unchanged", r["rc"] == 0 and "uuid=legacy-1" in r["output"], r["out"] + r["output"])
+    r = run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "", "APPS": "", "FAMILY": ""})
+    add("target legacy without uuid: empty (tag-only caller)", r["rc"] == 0 and "uuid=\n" in r["output"], r["output"])
+    r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa"})
+    add("target contract: build.yml's app and family", r["rc"] == 0 and "uuid=winnfosay9q4zcm1iisu2rgm" in r["output"] and "family=spa" in r["output"], r["out"] + r["output"])
+    for label, env in (("input also set", {"INPUT_UUID": "x", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa"}),
+                       ("two apps", {"INPUT_UUID": "", "APPS": "a\nb", "FAMILY": "next"}),
+                       ("no app", {"INPUT_UUID": "", "APPS": "", "FAMILY": "go"}),
+                       ("custom family", {"INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "custom"}),
+                       ("path-shaped app", {"INPUT_UUID": "", "APPS": "../servers/abcdefgh", "FAMILY": "spa"}),
+                       ("query-shaped app", {"INPUT_UUID": "", "APPS": "abcdefgh1234&force=true", "FAMILY": "spa"})):
+        r = run(port, T, env=dict(env, CONTRACT="true"))
+        add("target contract refuses: %s" % label, r["rc"] != 0 and "uuid=" not in r["output"], r["out"] + r["output"])
+
+    S = "Sync Coolify from build.yml"
+    r = run(port, S, env={"FAMILY": "next"})
+    p = Stub.patches[0] if Stub.patches else {}
+    add("sync next: one PATCH with port 80 and the full http check on 127.0.0.1:80/healthz",
+        r["rc"] == 0 and len(Stub.patches) == 1 and p.get("ports_exposes") == "80" and p.get("health_check_enabled") is True
+        and p.get("health_check_path") == "/healthz" and p.get("health_check_host") == "127.0.0.1"
+        and p.get("health_check_port") == "80" and p.get("health_check_type") == "http", r["out"] + json.dumps(Stub.patches))
+    add("sync: bearer and Access pair sent, nothing from the bodies printed",
+        FX["BEARER"] in r["argv"] and FX["CFID"] in r["argv"] and FX["PLANTED"] not in r["out"], r["out"])
+    add("sync: response file removed", "coolify-sync.json" not in r["left"], str(r["left"]))
+    r = run(port, S, env={"FAMILY": "spa"})
+    add("sync spa: same as next", r["rc"] == 0 and Stub.patches and Stub.patches[0].get("health_check_enabled") is True, r["out"])
+    r = run(port, S, env={"FAMILY": "go"})
+    add("sync go: port 80, Coolify check OFF, no http fields sent",
+        r["rc"] == 0 and Stub.patches == [{"ports_exposes": "80", "health_check_enabled": False}], r["out"] + json.dumps(Stub.patches))
+    r = run(port, S, env={"FAMILY": "next"}, script={"as_numbers": True})
+    add("sync read-back: Coolify storing 1/0 and numeric ports still matches", r["rc"] == 0, r["out"])
+    r = run(port, S, env={"FAMILY": "next"}, script={"drop": ["health_check_host"]})
+    add("sync read-back mismatch fails, names the field, leaks nothing",
+        r["rc"] != 0 and "health_check_host: want 127.0.0.1" in r["out"] and FX["PLANTED"] not in r["out"]
+        and "coolify-sync.json" not in r["left"], r["out"])
+    r = run(port, S, env={"FAMILY": "next"}, script={"patch_code": 403})
+    add("sync PATCH refused (403): fails with the token hint, no read-back",
+        r["rc"] != 0 and "403" in r["out"] and "cannot write applications" in r["out"] and "nope" in r["out"] and "a re-run retries" in r["out"], r["out"])
+    r = run(port, S, env={"FAMILY": "next"}, script={"app_code": 500})
+    add("sync read-back unreadable: fails", r["rc"] != 0 and "could not read the app back" in r["out"], r["out"])
+    r = run(port, S, env={"FAMILY": "next", "BEARER": ""})
+    add("sync without secrets: fails before any call", r["rc"] != 0 and not Stub.patches, r["out"])
+    r = run(port, S, env={"FAMILY": "custom"})
+    add("sync unknown family: fails before any call", r["rc"] != 0 and not Stub.patches, r["out"])
 
     r = run(port, "Deploy", script={"deploy": {"deployments": [{"message": "queued"}]}})
     add("missing-uuid: Deploy fails, but records that it queued", r["rc"] != 0 and "queued=true" in r["output"], r["out"] + r["output"])

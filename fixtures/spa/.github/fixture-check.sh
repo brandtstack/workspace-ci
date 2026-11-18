@@ -4,6 +4,13 @@
 # inlined it: in the built JS bundle that index.html references.
 set -euo pipefail
 base="${1:?base url}"
+# The start hook (nginx/entrypoint.d/) ran as nginx and wrote into /etc/nginx/runtime/.
+hook="$(curl -fsS "$base/hook")"
+if [ "$hook" != "ran" ]; then
+  echo "fixture-check: /hook says '$hook', want 'ran': the entrypoint.d hook did not run or could not write /etc/nginx/runtime/" >&2
+  exit 1
+fi
+echo "fixture-check: entrypoint.d hook ran and wrote the runtime snippet"
 html="$(curl -fsS "$base/")"
 js="$(printf '%s' "$html" | grep -o 'src="/assets/[^"]*\.js"' | head -1 | sed 's/^src="//; s/"$//')"
 [ -n "$js" ] || { echo "fixture-check: no /assets/*.js script in /" >&2; exit 1; }

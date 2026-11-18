@@ -22,7 +22,7 @@ RUN set -e; \
       while IFS= read -r line || [ -n "$line" ]; do if [ -n "$line" ]; then export "$line"; fi; done < /tmp/public-build.env; \
       rm -f /tmp/public-build.env; \
     fi; \
-    mkdir -p nginx; \
+    mkdir -p nginx/entrypoint.d nginx/runtime; \
     npm run build
 
 FROM nginx:1.31.8-alpine
@@ -32,8 +32,14 @@ COPY --from=build /app/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/nginx/ /etc/nginx/snippets/
 # After the app's nginx/ dir, so the shared healthz.conf always wins over an app file of that name.
 COPY --from=ws nginx/healthz.conf /etc/nginx/snippets/healthz.conf
+# Optional start hooks: the stock /docker-entrypoint.sh runs every executable *.sh here before nginx
+# starts, as user nginx, and ABORTS (nginx never starts) when one exits non-zero.
+COPY --from=build --chmod=0755 /app/nginx/entrypoint.d/ /docker-entrypoint.d/
+# The one writable config path: a hook writes here at start; the app's nginx/runtime/ ships the defaults.
+# On a read-only root fs the write fails and the default stays.
+COPY --from=build /app/nginx/runtime/ /etc/nginx/runtime/
 COPY --from=build /app/dist /usr/share/nginx/html
-RUN chown -R nginx:nginx /var/cache/nginx
+RUN chown -R nginx:nginx /var/cache/nginx /etc/nginx/runtime
 USER nginx
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]

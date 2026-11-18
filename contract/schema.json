@@ -23,9 +23,10 @@
     },
     "private-registry": { "type": "boolean" },
     "coolify-app": {
+      "description": "Coolify application uuid(s): 8-64 lowercase letters and digits. release.yml interpolates it into authenticated API URLs.",
       "oneOf": [
-        { "type": "string", "minLength": 1 },
-        { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+        { "type": "string", "pattern": "^[a-z0-9]{8,64}$" },
+        { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9]{8,64}$" }, "minItems": 1 }
       ]
     },
     "smoke-args": { "type": "string", "description": "Word-split into docker run flags: no spaces inside one argument. As trusted as the repo's own CI code." },
