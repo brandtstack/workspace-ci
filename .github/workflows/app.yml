@@ -61,6 +61,7 @@ jobs:
       smoke-args:       ${{ steps.contract.outputs.smoke-args }}
       go-main:          ${{ steps.contract.outputs.go-main }}
       go-dir:           ${{ steps.contract.outputs.go-dir }}
+      migrate:          ${{ steps.contract.outputs.migrate }}
     defaults:
       run:
         working-directory: ${{ inputs.path }}
@@ -408,6 +409,7 @@ jobs:
             ${{ contains(fromJSON('["next","spa","custom"]'), needs.verify.outputs.family) && format('PUBLIC_BUILD_ENV_B64={0}', steps.bargs.outputs.b64) || '' }}
             ${{ contains(fromJSON('["next","spa"]'), needs.verify.outputs.family) && format('NODE={0}', needs.verify.outputs.node) || '' }}
             ${{ needs.verify.outputs.family == 'next' && format('PRISMA={0}', needs.verify.outputs.prisma) || '' }}
+            ${{ needs.verify.outputs.family == 'next' && format('MIGRATE={0}', needs.verify.outputs.migrate) || '' }}
             ${{ needs.verify.outputs.family == 'go' && format('GO={0}', needs.verify.outputs.go) || '' }}
             ${{ needs.verify.outputs.family == 'go' && format('GO_MAIN={0}', needs.verify.outputs.go-main) || '' }}
             ${{ needs.verify.outputs.family == 'go' && format('GO_DIR={0}', needs.verify.outputs.go-dir) || '' }}
@@ -435,11 +437,14 @@ jobs:
           SMOKE_ARGS: ${{ needs.verify.outputs.smoke-args }}
           FAMILY: ${{ needs.verify.outputs.family }}
           DOTENVX: ${{ needs.verify.outputs.dotenvx }}
+          MIGRATE: ${{ needs.verify.outputs.migrate }}
         run: |
           set -euo pipefail
           # Unquoted on purpose: SMOKE_ARGS is word-split into docker run flags (globbing off), so no
           # argument may contain a space. It carries the same trust as the caller's own CI code.
           set -f
+          # migrate: true images run `prisma migrate deploy` at start; the smoke has no database.
+          if [ "$MIGRATE" = true ]; then SMOKE_ARGS="-e SKIP_MIGRATIONS=1 ${SMOKE_ARGS}"; fi
           if [ "$FAMILY" = next ] && [ "$DOTENVX" = true ]; then
             # A dotenvx image's ENTRYPOINT wrapper needs the private key, which CI never has, so the smoke
             # bypasses it and starts the server directly (built in, not a contract field).
@@ -507,6 +512,30 @@ jobs:
             exit 1
           fi
           echo "image HEALTHCHECK healthy"
+
+      # migrate: true. Proves the packaging of /opt/migrate (CLI, its deps, prisma.config.ts and its imports,
+      # the schema) with no database and no extra image pull: `migrate status` against a port nothing listens
+      # on must get as far as Prisma's can't-reach error, P1001. A MODULE_NOT_FOUND, a config load error or
+      # any other failure means the CLI could not even try. Measured on prisma 7.10.1:
+      #   Error: P1001: Can't reach database server at `127.0.0.1:1`
+      # `ci / integration` already runs migrate deploy on the repo's migrations against a real Postgres.
+      - name: Migrate CLI loads
+        if: needs.verify.outputs.migrate == 'true'
+        run: |
+          set -uo pipefail
+          out="$(docker run --rm -e DATABASE_URL='postgresql://x:x@127.0.0.1:1/x' -e CHECKPOINT_DISABLE=1 \
+            --entrypoint /bin/sh ci-image:local -c 'cd /opt/migrate && node node_modules/prisma/build/index.js migrate status' 2>&1)"
+          rc=$?
+          printf '%s\n' "$out"
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::migrate status exited 0 against an unreachable database"
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -q "Error: P1001: Can't reach database server at"; then
+            echo "::error::the Prisma CLI in /opt/migrate did not reach the connect step (want P1001); see the output above"
+            exit 1
+          fi
+          echo "migrate CLI loads (P1001 as expected)"
 
       # workspace-ci's own fixtures only: <path>/.github/fixture-check.sh asserts what the page serves
       # (e.g. that a contract build-arg reached the build). Never runs for an app repo.

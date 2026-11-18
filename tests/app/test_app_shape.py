@@ -19,7 +19,7 @@ ON = WF.get("on", WF.get(True))
 JOBS = WF["jobs"]
 PIN = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+@[0-9a-f]{40}$")
 OUTPUTS = ["family", "dockerfile", "node", "go", "prisma", "dotenvx", "integration", "favicon",
-           "build-args", "private-registry", "coolify-app", "smoke-args", "go-main", "go-dir"]
+           "build-args", "private-registry", "coolify-app", "smoke-args", "go-main", "go-dir", "migrate"]
 
 
 def steps(job):

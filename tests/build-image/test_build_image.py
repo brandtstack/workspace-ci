@@ -166,6 +166,7 @@ class BuildImage(unittest.TestCase):
         self.assertIn("--build-context ws=" + os.path.join(ROOT, "dockerfiles"), b)
         self.assertIn("--build-arg NODE=24", b)
         self.assertIn("--build-arg PRISMA=true", b)
+        self.assertIn("--build-arg MIGRATE=true", b)
         self.assertNotIn("GO=", b)
         self.assertTrue(b.rstrip().endswith(" " + os.path.realpath(os.path.join(self.tmp, "demo-App"))))
         want = base64.b64encode(
@@ -182,6 +183,7 @@ class BuildImage(unittest.TestCase):
         self.assertIn("--build-arg NODE=24", b)
         self.assertIn("--build-arg PUBLIC_BUILD_ENV_B64= ", b + " ")
         self.assertNotIn("PRISMA", b)
+        self.assertNotIn("MIGRATE", b)
         self.assertIn("spa.Dockerfile", b)
 
     def test_next_without_dotenvx_is_runtime_plain(self):
@@ -234,6 +236,7 @@ class BuildImage(unittest.TestCase):
         self.assertIn("--sysctl net.ipv4.ip_unprivileged_port_start=0", run)
         self.assertIn("-p 127.0.0.1:8080:80", run)
         self.assertIn("--path /health --port 3000", run)
+        self.assertIn("-e SKIP_MIGRATIONS=1", run)  # migrate: true, and the smoke has no database
         # dotenvx: the ENTRYPOINT wrapper needs the private key, so the smoke bypasses it (as app.yml does)
         self.assertTrue(run.rstrip().endswith("--entrypoint node localhost/demo-app:dev server.js"), run)
         self.assertIn("http://127.0.0.1:8080/healthz", self.argv(self.calls("curl")[0]))
@@ -246,6 +249,7 @@ class BuildImage(unittest.TestCase):
         run = self.argv(self.calls("podman", "run")[0])
         self.assertNotIn("--entrypoint", run)
         self.assertTrue(run.rstrip().endswith("localhost/demo-app:dev"), run)
+        self.assertNotIn("SKIP_MIGRATIONS", run)
         d = self.repo("ok-spa-min", name="plain-next")
         with open(os.path.join(d, ".github", "build.yml"), "w") as f:
             f.write("family: next\nnode: '24'\n")

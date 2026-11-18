@@ -97,7 +97,7 @@ case "$FAMILY" in
   next|spa|custom)
     B64="$(printf '%s' "$C_build_args" | base64 | tr -d '\n')"
     [ "$FAMILY" = custom ] || ARGS+=(--build-arg "NODE=$C_node")
-    [ "$FAMILY" = next ] && ARGS+=(--build-arg "PRISMA=$C_prisma")
+    [ "$FAMILY" = next ] && ARGS+=(--build-arg "PRISMA=$C_prisma" --build-arg "MIGRATE=$C_migrate")
     ARGS+=(--build-arg "PUBLIC_BUILD_ENV_B64=$B64") ;;
   go) ARGS+=(--build-arg "GO=$C_go" --build-arg "GO_MAIN=$C_go_main" --build-arg "GO_DIR=$C_go_dir") ;;
 esac
@@ -118,6 +118,8 @@ trap cleanup EXIT
 set -f
 # shellcheck disable=SC2086
 RUN=(podman run -d --sysctl net.ipv4.ip_unprivileged_port_start=0 -p "127.0.0.1:$PORT:80")
+# As app.yml: a migrate: true image runs migrations at start, and the smoke has no database.
+[ "$C_migrate" = true ] && RUN+=(-e SKIP_MIGRATIONS=1)
 # shellcheck disable=SC2206
 RUN+=($C_smoke_args)
 if [ "$FAMILY" = next ] && [ "$C_dotenvx" = true ]; then

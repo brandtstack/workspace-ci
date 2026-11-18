@@ -21,7 +21,8 @@ Being an ARG, the value shows in the build log; never put a secret there.
 
 Target `runtime-plain` or `runtime-dotenvx` (the workflow picks it from the contract's `dotenvx`).
 Build args: `NODE` (must equal the image's Node major, 24; a mismatch fails the build), `PRISMA`
-(`true`/`false`). Port 80, `HOSTNAME=0.0.0.0`, user `node`.
+and `MIGRATE` (`true`/`false`). Port 80, `HOSTNAME=0.0.0.0`, user `node`. The CMD of both runtimes is
+`/bin/sh /app/start.sh` (`next/start.sh`), which ends in `exec node /app/server.js`.
 
 The repo must provide:
 - `package.json`, `package-lock.json` and `.npmrc` at the app root.
@@ -35,6 +36,18 @@ The repo must provide:
   `--entrypoint node ... server.js` instead of the wrapper.
 - With `prisma: true`: generator `prisma-client` with `output = "../generated/prisma"`, so the client
   lands in `/app/generated`, which the runtime copies (empty without Prisma).
+- With `migrate: true` (needs `prisma: true`): migrations run at container start, before the server.
+  - The image carries the Prisma CLI in `/opt/migrate`, installed at the exact `prisma` version in
+    `package-lock.json` (and `dotenv`, if the lockfile has it), plus the repo's `prisma/` and `prisma.config.ts`.
+    Nothing is fetched at start.
+  - **`prisma.config.ts` may import only `prisma/config` and `dotenv`**: they are the only modules in
+    `/opt/migrate`. It must read the URL from `DATABASE_URL`. Migrations live in `prisma/migrations`.
+  - `start.sh` runs `prisma migrate deploy` from `/opt/migrate`. A failed migration exits non-zero and the
+    server never starts, so Coolify keeps the old container. A non-empty `SKIP_MIGRATIONS` skips the step.
+  - Under `dotenvx` the ENTRYPOINT wrapper runs `start.sh`, so the migration sees the decrypted `DATABASE_URL`.
+  - app.yml smokes the image with `SKIP_MIGRATIONS=1` (no database), and its "Migrate CLI loads" step runs
+    `migrate status` against an unreachable URL and requires Prisma's `P1001`, which proves the CLI, the
+    config and its imports load. `ci / integration` runs the migrations against a real Postgres.
 
 ## spa (`spa.Dockerfile`)
 
@@ -78,7 +91,5 @@ The app must:
 
 ## Not supported yet (step 3 extends the files if a pilot needs it)
 
-- Prisma `prisma-client-js` (client inside `node_modules`); only the `generated/prisma` layout works.
-- Prisma migrations at start (`prisma migrate deploy`: needs the Prisma CLI, `prisma/`, `prisma.config.ts`
-  and an entrypoint that chains before `node server.js`, also under dotenvx); insta-web and brl-intraweb
-  need it, and spec step 3 designs it.
+- Prisma `prisma-client-js` (client inside `node_modules`): not supported, by decision (spec step 3). Switch
+  the generator to `prisma-client` with `output = "../generated/prisma"`.

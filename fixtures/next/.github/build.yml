@@ -1,6 +1,7 @@
 family: next
 node: "24"
 prisma: true
+migrate: true
 integration: false
 build-args:
   NEXT_PUBLIC_FIXTURE: "1"

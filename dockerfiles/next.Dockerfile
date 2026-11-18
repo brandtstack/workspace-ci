@@ -1,6 +1,10 @@
 # Shared Next.js image, built by .github/workflows/app.yml. Contract: dockerfiles/README.md.
 # Stages: deps -> build -> runtime-base -> runtime-plain | runtime-dotenvx. The workflow picks the
 # last one with `target:`. No lint, test or typecheck here: `ci / verify` gates the commit.
+# migrate-true | migrate-false -> migrate-src: the Prisma CLI for migrations at start (contract `migrate`).
+# BuildKit builds only the one MIGRATE selects, in parallel with `build`.
+ARG MIGRATE=false
+
 FROM node:24.22.3-alpine AS deps
 # The contract's `node:` must match this image's major version (a FROM tag cannot be an ARG and stay
 # exact-pinned), so a mismatch fails the build instead of silently using another Node.
@@ -41,6 +45,31 @@ RUN set -e; \
     rm -f .env.production; \
     npm run build
 
+# Contract `migrate: false`: an empty /opt/migrate, so start.sh skips migrations.
+FROM node:24.22.3-alpine AS migrate-false
+RUN mkdir -p /opt/migrate
+
+# Contract `migrate: true`: the Prisma CLI (and dotenv, if the lockfile has it) at the exact lockfile versions,
+# in its own prefix, plus prisma/ and prisma.config.ts. prisma.config.ts may import only `prisma/config` and
+# `dotenv` (README). Not --ignore-scripts: the CLI's install fetches the engine it needs for this platform.
+FROM node:24.22.3-alpine AS migrate-true
+WORKDIR /src
+COPY package-lock.json .npmrc ./
+RUN mkdir -p /opt/migrate && cp .npmrc /opt/migrate/.npmrc
+RUN --mount=type=secret,id=npm_token \
+    if [ -f /run/secrets/npm_token ]; then NPM_TOKEN="$(cat /run/secrets/npm_token)"; export NPM_TOKEN; fi; \
+    set -e; \
+    prisma="$(node -p "(require('./package-lock.json').packages['node_modules/prisma'] || {}).version || ''")"; \
+    dotenv="$(node -p "(require('./package-lock.json').packages['node_modules/dotenv'] || {}).version || ''")"; \
+    if [ -z "$prisma" ]; then echo "migrate: true needs prisma in package-lock.json" >&2; exit 1; fi; \
+    cd /opt/migrate; \
+    npm install --omit=dev --no-save --no-audit --no-fund "prisma@$prisma" ${dotenv:+"dotenv@$dotenv"}; \
+    rm -rf .npmrc package.json package-lock.json /root/.npm
+COPY prisma /opt/migrate/prisma
+COPY prisma.config.ts /opt/migrate/prisma.config.ts
+
+FROM migrate-${MIGRATE} AS migrate-src
+
 FROM node:24.22.3-alpine AS runtime-base
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=80 HOSTNAME=0.0.0.0
@@ -48,11 +77,14 @@ COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 COPY --from=build --chown=node:node /app/public ./public
 COPY --from=build --chown=node:node /app/generated ./generated
+# Root-owned and read-only for the app user: migrate deploy only reads it.
+COPY --from=migrate-src /opt/migrate /opt/migrate
+COPY --from=ws --chmod=0755 next/start.sh ./start.sh
 USER node
 EXPOSE 80
 
 FROM runtime-base AS runtime-plain
-CMD ["node", "server.js"]
+CMD ["/bin/sh", "/app/start.sh"]
 
 FROM runtime-base AS runtime-dotenvx
 COPY --from=docker.io/dotenv/dotenvx:v2.38.2 /usr/local/bin/dotenvx /usr/local/bin/dotenvx
@@ -67,5 +99,6 @@ COPY --from=ws --chown=node:node --chmod=0755 next/check-env-encrypted.sh /tmp/c
 # which CI never has.
 RUN sh /tmp/check-env-encrypted.sh .env.production && rm -f /tmp/check-env-encrypted.sh
 RUN /usr/local/bin/dotenvx --version >/dev/null
+# The wrapper wraps start.sh, so a migration sees the decrypted DATABASE_URL.
 ENTRYPOINT ["/bin/sh", "./dotenvx-entry.sh"]
-CMD ["node", "server.js"]
+CMD ["/bin/sh", "/app/start.sh"]

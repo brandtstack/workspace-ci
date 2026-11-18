@@ -27,7 +27,7 @@ def base(**kw):
         "family": "", "dockerfile": "", "node": "", "go": "", "prisma": "false",
         "dotenvx": "false", "integration": "false", "favicon": "", "build-args": "",
         "private-registry": "false", "coolify-app": "", "smoke-args": "",
-        "go-main": "", "go-dir": "",
+        "go-main": "", "go-dir": "", "migrate": "false",
     }
     out.update(kw)
     return out
@@ -36,7 +36,7 @@ def base(**kw):
 EXPECTED = {
     "ok-next-full": base(
         family="next", dockerfile=dockerfile("next"), node="24", prisma="true",
-        dotenvx="true", integration="true",
+        dotenvx="true", integration="true", migrate="true",
         favicon="public/favicon.svg\npublic/icon.svg",
         **{"build-args": "NEXT_PUBLIC_SITE_URL=https://example.test\nNEXT_PUBLIC_FLAG=1",
            "private-registry": "true",
