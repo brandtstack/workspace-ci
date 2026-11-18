@@ -1,6 +1,10 @@
 # Shared Next.js image, built by .github/workflows/app.yml. Contract: dockerfiles/README.md.
 # Stages: deps -> build -> runtime-base -> runtime-plain | runtime-dotenvx. The workflow picks the
 # last one with `target:`. No lint, test or typecheck here: `ci / verify` gates the commit.
+# migrate-true | migrate-false -> migrate-src: the Prisma CLI for migrations at start (contract `migrate`).
+# BuildKit builds only the one MIGRATE selects, in parallel with `build`.
+ARG MIGRATE=false
+
 FROM node:24.22.3-alpine AS deps
 # The contract's `node:` must match this image's major version (a FROM tag cannot be an ARG and stay
 # exact-pinned), so a mismatch fails the build instead of silently using another Node.
@@ -41,6 +45,39 @@ RUN set -e; \
     rm -f .env.production; \
     npm run build
 
+# Contract `migrate: false`: an empty /opt/migrate, so start.sh skips migrations.
+FROM node:24.22.3-alpine AS migrate-false
+RUN mkdir -p /opt/migrate
+
+# Contract `migrate: true`: the Prisma CLI (and dotenv, if the lockfile has it) in its own prefix, plus the
+# schema, the migrations and prisma.config.ts (README "next"; it may import only `prisma/config` and `dotenv`).
+# - Pinned by the app's own lockfile: a two-dependency package.json beside a copy of package-lock.json, so npm
+#   reuses every locked version and checks each tarball's integrity hash. The check after the install fails the
+#   build if any installed package differs from the app's lockfile.
+# - No registry token and no app .npmrc: prisma and dotenv are public, so nothing secret is in this environment.
+# - The schema engine: npm 11 skips install scripts not covered by `allowScripts`, and without @prisma/engines'
+#   postinstall the CLI downloads the engine into ~/.cache at run time, i.e. at every container start. So the
+#   postinstall runs explicitly here (it fetches the engine for this platform from Prisma's CDN and checks its
+#   hash). app.yml's "Migrate CLI loads" runs the CLI with --network none, which fails if anything is fetched.
+# - Only prisma/schema.prisma and prisma/migrations are copied, never the rest of prisma/ (seeds, dumps, .env).
+FROM node:24.22.3-alpine AS migrate-true
+WORKDIR /opt/migrate
+COPY package-lock.json ./app-lock.json
+COPY --from=ws next/migrate-pin.cjs /tmp/migrate-pin.cjs
+RUN set -e; \
+    node /tmp/migrate-pin.cjs prepare app-lock.json; \
+    printf 'registry=https://registry.npmjs.org/\n' > .npmrc; \
+    npm install --omit=dev --no-audit --no-fund; \
+    node /tmp/migrate-pin.cjs check app-lock.json; \
+    (cd node_modules/@prisma/engines && node scripts/postinstall.js); \
+    ls node_modules/@prisma/engines/schema-engine-* >/dev/null; \
+    rm -rf .npmrc package.json package-lock.json app-lock.json /tmp/migrate-pin.cjs /root/.npm
+COPY prisma/schema.prisma /opt/migrate/prisma/schema.prisma
+COPY prisma/migrations /opt/migrate/prisma/migrations
+COPY prisma.config.ts /opt/migrate/prisma.config.ts
+
+FROM migrate-${MIGRATE} AS migrate-src
+
 FROM node:24.22.3-alpine AS runtime-base
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=80 HOSTNAME=0.0.0.0
@@ -48,11 +85,14 @@ COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 COPY --from=build --chown=node:node /app/public ./public
 COPY --from=build --chown=node:node /app/generated ./generated
+# Root-owned and read-only for the app user: migrate deploy only reads it.
+COPY --from=migrate-src /opt/migrate /opt/migrate
+COPY --from=ws --chmod=0755 next/start.sh ./start.sh
 USER node
 EXPOSE 80
 
 FROM runtime-base AS runtime-plain
-CMD ["node", "server.js"]
+CMD ["/bin/sh", "/app/start.sh"]
 
 FROM runtime-base AS runtime-dotenvx
 COPY --from=docker.io/dotenv/dotenvx:v2.38.2 /usr/local/bin/dotenvx /usr/local/bin/dotenvx
@@ -67,5 +107,6 @@ COPY --from=ws --chown=node:node --chmod=0755 next/check-env-encrypted.sh /tmp/c
 # which CI never has.
 RUN sh /tmp/check-env-encrypted.sh .env.production && rm -f /tmp/check-env-encrypted.sh
 RUN /usr/local/bin/dotenvx --version >/dev/null
+# The wrapper wraps start.sh, so a migration sees the decrypted DATABASE_URL.
 ENTRYPOINT ["/bin/sh", "./dotenvx-entry.sh"]
-CMD ["node", "server.js"]
+CMD ["/bin/sh", "/app/start.sh"]

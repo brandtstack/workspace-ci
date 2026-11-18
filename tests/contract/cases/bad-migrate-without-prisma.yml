@@ -1,0 +1,3 @@
+# expect: migrate: requires prisma: true
+family: next
+migrate: true

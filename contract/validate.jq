@@ -9,8 +9,8 @@ def nonempty: isstr and length > 0;
 def badpath: isstr and (startswith("/") or test("(\\A|/)\\.\\.(/|\\z)"));
 
 def keys_allowed: ["family","dockerfile","node","go","prisma","dotenvx","integration",
-  "favicon","build-args","private-registry","coolify-app","smoke-args","go-main","go-dir"];
-def bools: ["prisma","dotenvx","integration","private-registry"];
+  "favicon","build-args","private-registry","coolify-app","smoke-args","go-main","go-dir","migrate"];
+def bools: ["prisma","dotenvx","integration","private-registry","migrate"];
 
 . as $c
 | if $c == null then {errors: ["<file>: file is empty"]}
@@ -54,6 +54,10 @@ def bools: ["prisma","dotenvx","integration","private-registry"];
       # booleans
       (bools[] as $k | select(has($k) and ($c[$k] | isbool | not)) | "\($k): must be a boolean (true/false), not a string"),
       (("prisma","dotenvx") as $k | select(has($k) and ($fam == "spa" or $fam == "go")) | "\($k): only allowed with family next or custom"),
+      # migrate: next only (the shared image's start.sh runs it), and it needs the Prisma layout
+      (if has("migrate") and $famok != null and $fam != "next" then "migrate: only allowed with family next"
+       elif $c.migrate == true and $c.prisma != true then "migrate: requires prisma: true"
+       else empty end),
       # lists and maps
       (if has("favicon") then
          (if ($c.favicon | type) != "array" or ($c.favicon | all(nonempty) | not)
@@ -98,6 +102,7 @@ def bools: ["prisma","dotenvx","integration","private-registry"];
           go: (if has("go") then ($c.go | tostring) elif $fam == "go" then "1.27" else "" end),
           prisma: bl("prisma"),
           dotenvx: bl("dotenvx"),
+          migrate: bl("migrate"),
           integration: bl("integration"),
           favicon: lst("favicon"),
           "build-args": (if has("build-args") then [$c["build-args"] | to_entries[] | "\(.key)=\(.value)"] | join("\n") else "" end),

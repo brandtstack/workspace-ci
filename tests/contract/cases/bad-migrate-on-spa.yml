@@ -1,0 +1,3 @@
+# expect: migrate: only allowed with family next
+family: spa
+migrate: true
