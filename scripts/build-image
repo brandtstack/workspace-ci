@@ -48,7 +48,10 @@ done
 ROOT="$(cd "$(dirname "$SRC")/.." && pwd -P)"
 
 # --- contract: key=value lines, multi-line values as key<<DELIM ... DELIM -------------------------------
-OUT="$("$ROOT/contract/read.sh" "$DIR/.github/build.yml")" || exit 1
+# read.sh writes to $GITHUB_OUTPUT when it is set (a CI shell): unset it so the outputs come back on stdout.
+# GITHUB_REPOSITORY would also rename the go-main default, so it goes too.
+OUT="$(unset GITHUB_OUTPUT GITHUB_REPOSITORY; "$ROOT/contract/read.sh" "$DIR/.github/build.yml")" || exit 1
+[ -n "$OUT" ] || die "contract/read.sh printed nothing for $DIR/.github/build.yml"
 delim=""
 key=""
 first=0

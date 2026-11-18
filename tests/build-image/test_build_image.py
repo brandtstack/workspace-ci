@@ -19,8 +19,7 @@ REAL_CURL = shutil.which("curl")
 
 FAKE = """#!/usr/bin/env bash
 # fake {name}: log argv (and cwd), behave like the happy path
-printf '%s cwd=%s |%s\\n' "{name}" "$PWD" "$*" >> "$FAKE_LOG"
-{body}
+{log}{body}
 """
 BODIES = {
     "podman": """case "$1" in
@@ -32,12 +31,18 @@ exit 0""",
     "npm": "exit ${FAKE_NPM_EXIT:-0}",
     "make": "exit 0",
     # read.sh downloads yq with curl when the cache is cold: pass anything that is not the smoke probe through.
-    "curl": """case "$*" in *127.0.0.1*) [ -n "${FAKE_CURL_FAIL:-}" ] && exit 22; exit 0 ;; esac
-exec %s "$@\"""" % REAL_CURL,
+    "curl": """case "$*" in *127.0.0.1*) printf 'curl cwd=%s |%s\\n' "$PWD" "$*" >> "$FAKE_LOG"; [ -n "${FAKE_CURL_FAIL:-}" ] && exit 22; exit 0 ;; esac
+exec @REAL_CURL@ "$@\"""".replace("@REAL_CURL@", REAL_CURL),
 }
 
 
 class BuildImage(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # One cold yq cache for the class: read.sh downloads yq itself (through the real curl), as on a fresh runner.
+        cls.cache = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.cache, True)
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -48,7 +53,9 @@ class BuildImage(unittest.TestCase):
         for name, body in BODIES.items():
             p = os.path.join(self.bin, name)
             with open(p, "w") as f:
-                f.write(FAKE.format(name=name, body=body))
+                log = "" if name == "curl" else (
+                    'printf \'%s cwd=%s |%s\\n\' "' + name + '" "$PWD" "$*" >> "$FAKE_LOG"\n')
+                f.write(FAKE.format(name=name, body=body, log=log))
             os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
 
     def repo(self, case, name="demo-App"):
@@ -57,14 +64,18 @@ class BuildImage(unittest.TestCase):
         shutil.copy(os.path.join(CASES, case + ".yml"), os.path.join(d, ".github", "build.yml"))
         return d
 
-    def run_bi(self, *args, env=None, cwd=None):
+    def run_bi(self, *args, env=None, cwd=None, script=SCRIPT):
         e = dict(os.environ)
         e.pop("NPM_TOKEN", None)
+        # Never inherit a CI shell: read.sh writes to GITHUB_OUTPUT when set, and the yq cache is per test.
+        for k in ("GITHUB_OUTPUT", "GITHUB_REPOSITORY", "RUNNER_TOOL_CACHE"):
+            e.pop(k, None)
+        e["XDG_CACHE_HOME"] = self.cache
         e["PATH"] = self.bin + os.pathsep + e["PATH"]
         e["FAKE_LOG"] = self.log
         e["BUILD_IMAGE_SMOKE_TIMEOUT"] = "2"
         e.update(env or {})
-        return subprocess.run([SCRIPT, *args], env=e, cwd=cwd, capture_output=True, text=True)
+        return subprocess.run([script, *args], env=e, cwd=cwd, capture_output=True, text=True)
 
     def lines(self):
         with open(self.log) as f:
@@ -112,6 +123,14 @@ class BuildImage(unittest.TestCase):
         self.assertIn("build.yml", r.stderr)
         self.assertEqual(self.calls("podman"), [])
         self.assertEqual(self.calls("npm"), [])
+
+    def test_ci_shell_env_does_not_swallow_outputs(self):
+        out = os.path.join(self.tmp, "gh_output")
+        r = self.run_bi("--no-verify", "--no-smoke", self.repo("ok-spa-min"),
+                        env={"GITHUB_OUTPUT": out, "GITHUB_REPOSITORY": "o/other"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.calls("podman", "build")), 1)
+        self.assertFalse(os.path.exists(out))
 
     def test_missing_contract_exits_1(self):
         d = os.path.join(self.tmp, "empty")
@@ -254,8 +273,7 @@ class BuildImage(unittest.TestCase):
         d = self.repo("ok-spa-min")
         link = os.path.join(self.tmp, "link-bi")
         os.symlink(SCRIPT, link)
-        e = dict(os.environ, PATH=self.bin + os.pathsep + os.environ["PATH"], FAKE_LOG=self.log)
-        r = subprocess.run([link, "--no-verify", "--no-smoke"], cwd=d, env=e, capture_output=True, text=True)
+        r = self.run_bi("--no-verify", "--no-smoke", script=link, cwd=d)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("-f " + os.path.join(ROOT, "dockerfiles", "spa.Dockerfile"), self.argv(self.calls("podman", "build")[0]))
 
