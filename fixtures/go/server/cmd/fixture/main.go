@@ -47,7 +47,11 @@ func handler(dir string) http.Handler {
 
 // healthcheck is the image HEALTHCHECK: GET 127.0.0.1:$PORT/healthz, 2 s timeout, 0 on 200 else 1.
 func healthcheck(url string) int {
-	c := http.Client{Timeout: 2 * time.Second}
+	c := http.Client{
+		Timeout: 2 * time.Second,
+		// Exactly 200 from /healthz itself: a redirect is a failure, not something to follow.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	resp, err := c.Get(url)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "healthcheck:", err)

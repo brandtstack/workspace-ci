@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestHealthz(t *testing.T) {
@@ -46,6 +47,22 @@ func TestHealthcheck(t *testing.T) {
 	defer bad.Close()
 	if got := healthcheck(bad.URL); got != 1 {
 		t.Fatalf("503: got %d", got)
+	}
+	redirect := httptest.NewServer(http.RedirectHandler(ok.URL, http.StatusMovedPermanently))
+	defer redirect.Close()
+	if got := healthcheck(redirect.URL); got != 1 {
+		t.Fatalf("301 to a 200: got %d", got)
+	}
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { <-release }))
+	defer slow.Close()
+	defer close(release)
+	start := time.Now()
+	if got := healthcheck(slow.URL); got != 1 {
+		t.Fatalf("hung server: got %d", got)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("hung server: took %s, want about 2 s", d)
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

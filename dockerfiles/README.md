@@ -68,12 +68,13 @@ Build args `GO` (major.minor, e.g. `1.27`), `GO_MAIN` (main package, e.g. `./cmd
 The app must:
 - Listen on `PORT` (80 in the image). A listen address under any other name is not read.
 - Serve `/healthz`.
-- Implement `<binary> healthcheck`: GET `http://127.0.0.1:$PORT/healthz` with a 2 s timeout, exit 0 on 200,
-  1 otherwise. The image `HEALTHCHECK` runs it in exec form (`/app healthcheck`, every 10 s, 3 s timeout,
+- Implement `<binary> healthcheck`: GET `http://127.0.0.1:$PORT/healthz` with a 2 s timeout and no redirects
+  followed, exit 0 on 200, 1 otherwise. The image `HEALTHCHECK` runs it in exec form (`/app healthcheck`, every 10 s, 3 s timeout,
   5 s start period, 3 retries), and the app.yml smoke requires it to exit 0 and the container to turn
   `healthy` within 30 s.
 - Keep persistent files under `/data`. Every go image ships it empty and owned by `65532:65532`; a named
-  volume mounted there takes that ownership on first mount.
+  (or anonymous) volume mounted there takes that ownership on first mount. A bind mount keeps the host
+  directory's owner, so it must be chowned to `65532` on the host or the app cannot write.
 
 ## Not supported yet (step 3 extends the files if a pilot needs it)
 

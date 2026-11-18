@@ -462,7 +462,8 @@ jobs:
           fi
           echo "external reachability OK"
 
-      # Not for go images: distroless has no shell and no wget, so `docker exec` cannot run anything there.
+      # Not for go images: distroless has no shell and no wget. Their in-container check is the next step,
+      # which execs the app binary itself.
       - name: Smoke test from INSIDE the container
         if: needs.verify.outputs.node != ''
         run: |
