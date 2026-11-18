@@ -48,7 +48,11 @@ pid and temp files in `/tmp`; binding 80 as non-root relies on `ip_unprivileged_
 Two optional subdirectories of `nginx/` handle values known only at start (tilde's `/health` version):
 - `nginx/entrypoint.d/*.sh` are copied to `/docker-entrypoint.d/` (mode 0755). The stock entrypoint runs
   them as `nginx` before nginx starts and **aborts, so nginx never starts, if one exits non-zero**: a hook
-  must always `exit 0`.
+  must always `exit 0`. Every file there is copied executable, so put only hooks in it.
+- **A hook writes config that nginx `include`s, so it must write only values it has validated**
+  (an allow-list of characters, as tilde's `10-app-version.sh` does with `tr -cd 'A-Za-z0-9._+-'`):
+  no quotes, semicolons, braces or newlines from the environment. `/etc/nginx/runtime/` is writable by
+  the serving user in every spa image; this is the accepted cost of start-time values.
 - `/etc/nginx/runtime/` is owned by `nginx` and is the only writable config path. `nginx/runtime/` holds
   its shipped defaults, so an `include /etc/nginx/runtime/<file>` never names a missing file. On a
   read-only root fs a hook's write fails and the default stays.

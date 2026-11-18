@@ -349,7 +349,9 @@ from `build.yml`'s `coolify-app` (exactly one, for now), and before deploying wr
 `ports_exposes` (80) and health check from the family: next/spa get Coolify's http check on
 `127.0.0.1:80/healthz`; go keeps Coolify's check off and relies on the image's own `HEALTHCHECK`
 (distroless has no shell for Coolify's `CMD-SHELL` check). The values are read back before the deploy;
-hand edits in Coolify are overwritten on every release.
+hand edits in Coolify are overwritten on every release. The sync runs before the image is promoted
+and the tag pushed, so a refused or mismatched sync leaves nothing minted and a re-run retries it.
+`coolify-app` must be a Coolify uuid (8-64 lowercase letters and digits).
 
 ```yaml
   release:

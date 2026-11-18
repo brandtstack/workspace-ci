@@ -318,9 +318,10 @@ def rows(port):
     add("response file never outlives the step (success path)", "coolify.json" not in r["left"], str(r["left"]))
 
     # ---- contract mode: target and Coolify sync (spec D6) ----
-    add("order: contract read -> target -> guard; Sync -> Set APP_VERSION -> Point -> Deploy",
+    add("order: contract read -> target -> guard; head -> Sync -> promote -> tag -> APP_VERSION -> Point -> Deploy (sync failure leaves nothing minted)",
         ix("Read the build contract") < ix("Resolve the Coolify target") < ix("Skip if this commit")
-        and ix("Push git tag") < ix("Sync Coolify from build.yml") < ix("Set APP_VERSION") < ix("Point the Coolify") < ix("Deploy"),
+        and ix("Resolve the PR head SHA") < ix("Sync Coolify from build.yml") < ix("Promote the tested image") < ix("Push git tag")
+        < ix("Set APP_VERSION") < ix("Point the Coolify") < ix("Deploy"),
         " | ".join(names))
     sy = steps["Sync Coolify from build.yml"]["if"]
     add("Sync is gated on contract mode, guard skip == 'false', publish-image and a target",
@@ -338,12 +339,14 @@ def rows(port):
     add("target legacy: the input, unchanged", r["rc"] == 0 and "uuid=legacy-1" in r["output"], r["out"] + r["output"])
     r = run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "", "APPS": "", "FAMILY": ""})
     add("target legacy without uuid: empty (tag-only caller)", r["rc"] == 0 and "uuid=\n" in r["output"], r["output"])
-    r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "app-9", "FAMILY": "spa"})
-    add("target contract: build.yml's app and family", r["rc"] == 0 and "uuid=app-9" in r["output"] and "family=spa" in r["output"], r["out"] + r["output"])
-    for label, env in (("input also set", {"INPUT_UUID": "x", "APPS": "app-9", "FAMILY": "spa"}),
+    r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa"})
+    add("target contract: build.yml's app and family", r["rc"] == 0 and "uuid=winnfosay9q4zcm1iisu2rgm" in r["output"] and "family=spa" in r["output"], r["out"] + r["output"])
+    for label, env in (("input also set", {"INPUT_UUID": "x", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa"}),
                        ("two apps", {"INPUT_UUID": "", "APPS": "a\nb", "FAMILY": "next"}),
                        ("no app", {"INPUT_UUID": "", "APPS": "", "FAMILY": "go"}),
-                       ("custom family", {"INPUT_UUID": "", "APPS": "app-9", "FAMILY": "custom"})):
+                       ("custom family", {"INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "custom"}),
+                       ("path-shaped app", {"INPUT_UUID": "", "APPS": "../servers/abcdefgh", "FAMILY": "spa"}),
+                       ("query-shaped app", {"INPUT_UUID": "", "APPS": "abcdefgh1234&force=true", "FAMILY": "spa"})):
         r = run(port, T, env=dict(env, CONTRACT="true"))
         add("target contract refuses: %s" % label, r["rc"] != 0 and "uuid=" not in r["output"], r["out"] + r["output"])
 
@@ -370,7 +373,7 @@ def rows(port):
         and "coolify-sync.json" not in r["left"], r["out"])
     r = run(port, S, env={"FAMILY": "next"}, script={"patch_code": 403})
     add("sync PATCH refused (403): fails with the token hint, no read-back",
-        r["rc"] != 0 and "403" in r["out"] and "cannot write applications" in r["out"] and "nope" in r["out"], r["out"])
+        r["rc"] != 0 and "403" in r["out"] and "cannot write applications" in r["out"] and "nope" in r["out"] and "a re-run retries" in r["out"], r["out"])
     r = run(port, S, env={"FAMILY": "next"}, script={"app_code": 500})
     add("sync read-back unreadable: fails", r["rc"] != 0 and "could not read the app back" in r["out"], r["out"])
     r = run(port, S, env={"FAMILY": "next", "BEARER": ""})

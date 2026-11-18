@@ -3,4 +3,4 @@ family: go
 go: "1.27"
 go-dir: server
 go-main: ./cmd/usage-server
-coolify-app: usage.example.test
+coolify-app: usageapp0example0test

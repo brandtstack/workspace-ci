@@ -12,6 +12,6 @@ build-args:
   NEXT_PUBLIC_FLAG: "1"
 private-registry: true
 coolify-app:
-  - app.example.test
-  - app2.example.test
+  - app0example0test
+  - app2example0test
 smoke-args: "--path /health --port 3000"
