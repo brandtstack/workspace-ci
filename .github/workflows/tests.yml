@@ -41,6 +41,9 @@ jobs:
       - name: No shared Dockerfile runs a gate
         run: |
           "$RUNNER_TEMP/venv/bin/python" tests/dockerfiles/test_no_gate.py
+      - name: next start.sh behaviour (stubbed node)
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" tests/dockerfiles/test_start_sh.py
       - name: Tests for scripts/build-image (fake podman)
         run: |
           "$RUNNER_TEMP/venv/bin/python" tests/build-image/test_build_image.py

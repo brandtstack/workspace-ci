@@ -49,23 +49,26 @@ RUN set -e; \
 FROM node:24.22.3-alpine AS migrate-false
 RUN mkdir -p /opt/migrate
 
-# Contract `migrate: true`: the Prisma CLI (and dotenv, if the lockfile has it) at the exact lockfile versions,
-# in its own prefix, plus prisma/ and prisma.config.ts. prisma.config.ts may import only `prisma/config` and
-# `dotenv` (README). Not --ignore-scripts: the CLI's install fetches the engine it needs for this platform.
+# Contract `migrate: true`: the Prisma CLI (and dotenv, if the lockfile has it) in its own prefix, plus the
+# schema, the migrations and prisma.config.ts (README "next"; it may import only `prisma/config` and `dotenv`).
+# - Pinned by the app's own lockfile: a two-dependency package.json beside a copy of package-lock.json, so npm
+#   reuses every locked version and checks each tarball's integrity hash. The check after the install fails the
+#   build if any installed package differs from the app's lockfile.
+# - No registry token and no app .npmrc: prisma and dotenv are public. Install scripts stay on (the CLI's install
+#   fetches the engine for this platform), so they run with nothing secret in the environment.
+# - Only prisma/schema.prisma and prisma/migrations are copied, never the rest of prisma/ (seeds, dumps, .env).
 FROM node:24.22.3-alpine AS migrate-true
-WORKDIR /src
-COPY package-lock.json .npmrc ./
-RUN mkdir -p /opt/migrate && cp .npmrc /opt/migrate/.npmrc
-RUN --mount=type=secret,id=npm_token \
-    if [ -f /run/secrets/npm_token ]; then NPM_TOKEN="$(cat /run/secrets/npm_token)"; export NPM_TOKEN; fi; \
-    set -e; \
-    prisma="$(node -p "(require('./package-lock.json').packages['node_modules/prisma'] || {}).version || ''")"; \
-    dotenv="$(node -p "(require('./package-lock.json').packages['node_modules/dotenv'] || {}).version || ''")"; \
-    if [ -z "$prisma" ]; then echo "migrate: true needs prisma in package-lock.json" >&2; exit 1; fi; \
-    cd /opt/migrate; \
-    npm install --omit=dev --no-save --no-audit --no-fund "prisma@$prisma" ${dotenv:+"dotenv@$dotenv"}; \
-    rm -rf .npmrc package.json package-lock.json /root/.npm
-COPY prisma /opt/migrate/prisma
+WORKDIR /opt/migrate
+COPY package-lock.json ./app-lock.json
+COPY --from=ws next/migrate-pin.cjs /tmp/migrate-pin.cjs
+RUN set -e; \
+    node /tmp/migrate-pin.cjs prepare app-lock.json; \
+    printf 'registry=https://registry.npmjs.org/\n' > .npmrc; \
+    npm install --omit=dev --no-audit --no-fund; \
+    node /tmp/migrate-pin.cjs check app-lock.json; \
+    rm -rf .npmrc package.json package-lock.json app-lock.json /tmp/migrate-pin.cjs /root/.npm
+COPY prisma/schema.prisma /opt/migrate/prisma/schema.prisma
+COPY prisma/migrations /opt/migrate/prisma/migrations
 COPY prisma.config.ts /opt/migrate/prisma.config.ts
 
 FROM migrate-${MIGRATE} AS migrate-src

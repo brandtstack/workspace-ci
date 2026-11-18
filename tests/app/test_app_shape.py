@@ -154,9 +154,9 @@ class AppShape(unittest.TestCase):
         self.assertIn('[ "$FAMILY" = next ] && [ "$DOTENVX" = true ]', run)
         runs_ = [l.strip() for l in run.splitlines() if l.strip().startswith("docker run")]
         self.assertEqual(len(runs_), 2)
-        bypass = [l for l in runs_ if "--entrypoint node" in l]
+        bypass = [l for l in runs_ if "--entrypoint /bin/sh" in l]
         self.assertEqual(len(bypass), 1)
-        self.assertTrue(bypass[0].endswith("--entrypoint node ci-image:local server.js"), bypass[0])
+        self.assertTrue(bypass[0].endswith("--entrypoint /bin/sh ci-image:local /app/start.sh"), bypass[0])
         plain = [l for l in runs_ if "--entrypoint" not in l][0]
         self.assertTrue(plain.endswith("$SMOKE_ARGS ci-image:local"), plain)
 
@@ -181,6 +181,22 @@ class AppShape(unittest.TestCase):
         wget = [s for s in steps("image") if "docker exec smoke wget" in s.get("run", "")]
         self.assertEqual(len(wget), 1)
         self.assertIn("needs.verify.outputs.node", wget[0]["if"])
+
+    def test_migrate_cli_step(self):
+        mig = [s for s in steps("image") if s.get("name") == "Migrate CLI loads"]
+        self.assertEqual(len(mig), 1)
+        self.assertEqual(mig[0]["if"], "needs.verify.outputs.migrate == 'true'")
+        self.assertIn("migrate status", mig[0]["run"])
+        self.assertIn("Error: P1001: Can't reach database server at", mig[0]["run"])
+        self.assertIn("127.0.0.1:1", mig[0]["run"])
+        names = [s.get("name", "") for s in steps("image")]
+        self.assertLess(names.index("Migrate CLI loads"), names.index("Tear down"))
+        boot = [s for s in steps("image") if s.get("name") == "Boot and smoke test"][0]
+        self.assertIn("SKIP_MIGRATIONS=1", boot["run"])
+        self.assertEqual(boot["env"]["MIGRATE"], "${{ needs.verify.outputs.migrate }}")
+        # A dotenvx smoke still goes through start.sh, never straight to server.js.
+        self.assertIn("--entrypoint /bin/sh ci-image:local /app/start.sh", boot["run"])
+        self.assertNotIn("server.js", boot["run"])
 
     def test_go_smoke_runs_healthcheck_and_waits_for_healthy(self):
         go = [s for s in steps("image") if "docker exec smoke /app healthcheck" in s.get("run", "")]

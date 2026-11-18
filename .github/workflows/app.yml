@@ -447,9 +447,9 @@ jobs:
           if [ "$MIGRATE" = true ]; then SMOKE_ARGS="-e SKIP_MIGRATIONS=1 ${SMOKE_ARGS}"; fi
           if [ "$FAMILY" = next ] && [ "$DOTENVX" = true ]; then
             # A dotenvx image's ENTRYPOINT wrapper needs the private key, which CI never has, so the smoke
-            # bypasses it and starts the server directly (built in, not a contract field).
+            # bypasses it and runs the image CMD (start.sh) directly (built in, not a contract field).
             # shellcheck disable=SC2086
-            docker run -d --name smoke -p 8080:80 $SMOKE_ARGS --entrypoint node ci-image:local server.js
+            docker run -d --name smoke -p 8080:80 $SMOKE_ARGS --entrypoint /bin/sh ci-image:local /app/start.sh
           else
             # shellcheck disable=SC2086
             docker run -d --name smoke -p 8080:80 $SMOKE_ARGS ci-image:local

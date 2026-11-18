@@ -238,7 +238,7 @@ class BuildImage(unittest.TestCase):
         self.assertIn("--path /health --port 3000", run)
         self.assertIn("-e SKIP_MIGRATIONS=1", run)  # migrate: true, and the smoke has no database
         # dotenvx: the ENTRYPOINT wrapper needs the private key, so the smoke bypasses it (as app.yml does)
-        self.assertTrue(run.rstrip().endswith("--entrypoint node localhost/demo-app:dev server.js"), run)
+        self.assertTrue(run.rstrip().endswith("--entrypoint /bin/sh localhost/demo-app:dev /app/start.sh"), run)
         self.assertIn("http://127.0.0.1:8080/healthz", self.argv(self.calls("curl")[0]))
         rm = self.calls("podman", "rm")
         self.assertEqual(len(rm), 1)

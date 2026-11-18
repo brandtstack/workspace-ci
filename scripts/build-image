@@ -123,8 +123,8 @@ RUN=(podman run -d --sysctl net.ipv4.ip_unprivileged_port_start=0 -p "127.0.0.1:
 # shellcheck disable=SC2206
 RUN+=($C_smoke_args)
 if [ "$FAMILY" = next ] && [ "$C_dotenvx" = true ]; then
-  # As app.yml: the dotenvx ENTRYPOINT wrapper needs the private key, so the smoke starts the server directly.
-  RUN+=(--entrypoint node "$TAG" server.js)
+  # As app.yml: the dotenvx ENTRYPOINT wrapper needs the private key, so the smoke runs the CMD (start.sh) directly.
+  RUN+=(--entrypoint /bin/sh "$TAG" /app/start.sh)
 else
   RUN+=("$TAG")
 fi

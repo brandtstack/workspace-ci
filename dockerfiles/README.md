@@ -33,18 +33,38 @@ The repo must provide:
   (every target), and the `runtime-dotenvx` stage runs `next/check-env-encrypted.sh` on the copy it
   ships, failing the build if any value is plaintext. The wrapper's `--strict` precheck needs the private
   key, which CI never has, so the CI smoke (app.yml and `scripts/build-image`) starts a dotenvx image with
-  `--entrypoint node ... server.js` instead of the wrapper.
+  `--entrypoint /bin/sh ... /app/start.sh` instead of the wrapper. So the wrapper itself never runs in CI;
+  `tests/dockerfiles/test_start_sh.py` pins its wiring (ENTRYPOINT wrapper, CMD `start.sh`) statically.
 - With `prisma: true`: generator `prisma-client` with `output = "../generated/prisma"`, so the client
   lands in `/app/generated`, which the runtime copies (empty without Prisma).
 - With `migrate: true` (needs `prisma: true`): migrations run at container start, before the server.
-  - The image carries the Prisma CLI in `/opt/migrate`, installed at the exact `prisma` version in
-    `package-lock.json` (and `dotenv`, if the lockfile has it), plus the repo's `prisma/` and `prisma.config.ts`.
-    Nothing is fetched at start.
+  - **Packaging.** `/opt/migrate` holds the Prisma CLI (and `dotenv`, if the lockfile has it), installed from
+    the app's own `package-lock.json`: every package at its locked version, integrity-checked, and the build
+    fails if any installed version differs (`next/migrate-pin.cjs`). No registry token reaches that install.
+    Only `prisma/schema.prisma`, `prisma/migrations` and `prisma.config.ts` are copied in, never the rest of
+    `prisma/`. Nothing is fetched at start. The lockfile must be version 2 or 3.
   - **`prisma.config.ts` may import only `prisma/config` and `dotenv`**: they are the only modules in
-    `/opt/migrate`. It must read the URL from `DATABASE_URL`. Migrations live in `prisma/migrations`.
-  - `start.sh` runs `prisma migrate deploy` from `/opt/migrate`. A failed migration exits non-zero and the
-    server never starts, so Coolify keeps the old container. A non-empty `SKIP_MIGRATIONS` skips the step.
-  - Under `dotenvx` the ENTRYPOINT wrapper runs `start.sh`, so the migration sees the decrypted `DATABASE_URL`.
+    `/opt/migrate`. It must read the URL from `DATABASE_URL`.
+  - **Start.** `start.sh` runs `prisma migrate deploy` from `/opt/migrate`. A failed migration exits non-zero
+    and the server never starts. A non-empty `SKIP_MIGRATIONS` skips the step.
+  - **Credentials and environment.** The migration runs with `PATH`, `HOME`, `CHECKPOINT_DISABLE` and
+    `DATABASE_URL` only, never the app's other secrets. Set `MIGRATE_DATABASE_URL` to give the migration a
+    schema-owner role while the server's `DATABASE_URL` stays a least-privilege one; `start.sh` unsets it before
+    the server starts. Without it, the server's own `DATABASE_URL` must be able to run DDL (a single role,
+    as insta-web has).
+  - **Logs.** Prisma's own output is not printed (it names hosts and databases). The log gets fixed `[start]`
+    lines, the `Applying migration`, `No pending migrations` and `All migrations` lines, and on failure only
+    the exit code and Prisma's error code (for example `P3009`).
+  - Under `dotenvx` the ENTRYPOINT wrapper runs `start.sh`, so the migration sees the decrypted URL.
+  - **Migrations must be backward-compatible with the release before them.** The new container migrates while
+    the old one still serves. A dropped or renamed column, or a new `NOT NULL` without a default, breaks the
+    old container until the swap. Expand first, contract in a later release.
+  - **Time budget.** Coolify's check (start period 5 s, then 10 × 5 s) marks the new container unhealthy after
+    about 55 s, and the migration runs inside that window. A longer migration needs a manual run first.
+  - **A failed migration is not rolled back by itself.** The old container keeps serving, but Postgres DDL
+    applied before the failure stays, and Prisma records the migration as failed. Every later start then
+    stops on `P3009` until someone fixes the database and runs `prisma migrate resolve --rolled-back <name>`
+    (or `--applied`) against it.
   - app.yml smokes the image with `SKIP_MIGRATIONS=1` (no database), and its "Migrate CLI loads" step runs
     `migrate status` against an unreachable URL and requires Prisma's `P1001`, which proves the CLI, the
     config and its imports load. `ci / integration` runs the migrations against a real Postgres.
