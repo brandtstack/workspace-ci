@@ -32,6 +32,26 @@
     "smoke-args": { "type": "string", "description": "Word-split into docker run flags: no spaces inside one argument. As trusted as the repo's own CI code." },
     "go-main": { "type": "string", "minLength": 1, "description": "go only. Package go build builds. Default ./cmd/<repo name>." },
     "go-dir": { "type": "string", "minLength": 1, "description": "go only. Module root. Default '.'." },
+    "smoke-env": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Z_][A-Z0-9_]*$" },
+      "additionalProperties": { "type": "string", "pattern": "^[^\\n\\r]*$" },
+      "description": "Env for the smoke container (app.yml's image job), as an --env-file: a value may hold spaces, quotes and `=`, but no line break. Emitted as smoke-env-b64 (base64 of the K=V lines). Smoke only: never a secret, never reaches Coolify or the build. A name may not also be in smoke-random."
+    },
+    "smoke-postgres": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,30}$" },
+      "description": "Database names. The smoke starts a throwaway postgres:16.15-alpine beside the container and creates each one; the URL is postgresql://smoke:smoke@smoke-pg:5432/<name>?sslmode=disable. Map it to the app's own env names through smoke-env."
+    },
+    "smoke-random": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Z_][A-Z0-9_]*$" },
+      "additionalProperties": { "type": "integer", "minimum": 16, "maximum": 64 },
+      "description": "Name -> byte count. Each name is set, per run, to that many fresh random bytes as base64 (for KEK-style keys). Smoke only. A name may not also be in smoke-env."
+    },
     "migrate": { "type": "boolean", "description": "next only, requires prisma: true. The image runs `prisma migrate deploy` at start, before the server (dockerfiles/README.md, next)." }
   },
   "allOf": [

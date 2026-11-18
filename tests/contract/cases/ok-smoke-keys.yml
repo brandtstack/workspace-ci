@@ -1,0 +1,12 @@
+# expect: ok
+family: custom
+dockerfile: Dockerfile
+go: "1.27"
+smoke-env:
+  GREETING: hello world
+  TRUSTED: "a=b c=d $HOME \"q\" 'r' #not-a-comment"
+  EMPTY: ""
+smoke-postgres: [one, two_2]
+smoke-random:
+  FIXTURE_KEY: 32
+  OTHER_KEY: 64

@@ -77,7 +77,7 @@ if [ "$(printf '%s' "$RESULT" | jq 'has("errors")')" = true ]; then
 fi
 
 DELIM="ghadelim_$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
-KEYS='["family","dockerfile","node","go","prisma","dotenvx","integration","favicon","build-args","private-registry","coolify-app","smoke-args","go-main","go-dir","migrate"]'
+KEYS='["family","dockerfile","node","go","prisma","dotenvx","integration","favicon","build-args","private-registry","coolify-app","smoke-args","go-main","go-dir","migrate","smoke-env-b64","smoke-postgres","smoke-random"]'
 RENDERED="$(printf '%s' "$RESULT" | jq -r --arg d "$DELIM" --argjson keys "$KEYS" '
   .outputs as $o | $keys[] | . as $k | $o[$k] as $v
   | if ($v | test("\n")) then "\($k)<<\($d)\n\($v)\n\($d)" else "\($k)=\($v)" end')"

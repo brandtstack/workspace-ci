@@ -2,6 +2,7 @@
 """Tests for contract/read.sh (the .github/build.yml reader). Needs bash, jq, curl and network
 for the one-time yq download (cached in a temp RUNNER_TOOL_CACHE). Run: python3 tests/contract/test_contract.py
 """
+import base64
 import glob
 import os
 import re
@@ -28,10 +29,15 @@ def base(**kw):
         "dotenvx": "false", "integration": "false", "favicon": "", "build-args": "",
         "private-registry": "false", "coolify-app": "", "smoke-args": "",
         "go-main": "", "go-dir": "", "migrate": "false",
+        "smoke-env-b64": "", "smoke-postgres": "", "smoke-random": "",
     }
     out.update(kw)
     return out
 
+
+# What ok-smoke-keys.yml's smoke-env decodes to: K=V lines, each newline-terminated, values untouched.
+SMOKE_ENV_TEXT = "GREETING=hello world\nTRUSTED=a=b c=d $HOME \"q\" 'r' #not-a-comment\nEMPTY=\n"
+SMOKE_ENV_B64 = base64.b64encode(SMOKE_ENV_TEXT.encode()).decode()
 
 EXPECTED = {
     "ok-next-full": base(
@@ -51,6 +57,10 @@ EXPECTED = {
         favicon="a.svg\nb.svg\nc.svg",
         **{"build-args": "VITE_A=1\nNEXT_PUBLIC_B=two words", "smoke-args": "line one\nline two\n"}),
     "ok-custom": base(family="custom", dockerfile="deploy/Dockerfile", node="24"),
+    "ok-smoke-keys": base(
+        family="custom", dockerfile="Dockerfile", go="1.27",
+        **{"smoke-env-b64": SMOKE_ENV_B64, "smoke-postgres": "one two_2",
+           "smoke-random": "FIXTURE_KEY:32 OTHER_KEY:64"}),
     "ok-favicon-empty": base(family="spa", dockerfile=dockerfile("spa"), node="24"),
 }
 
@@ -114,7 +124,7 @@ class ContractTests(unittest.TestCase):
 
     def test_bad_cases(self):
         paths = sorted(glob.glob(os.path.join(CASES, "bad-*.yml")))
-        self.assertGreaterEqual(len(paths), 8)
+        self.assertGreaterEqual(len(paths), 30)
         for path in paths:
             with self.subTest(case=os.path.basename(path)):
                 with open(path) as f:
@@ -181,9 +191,21 @@ class ContractTests(unittest.TestCase):
         with open(READ) as f:
             rd = f.read()
         block = rd.split("KEYS='[")[1].split("]'")[0]
-        out_keys = set(re.findall(r'"([a-z-]+)"', block))
+        # smoke-env is emitted as smoke-env-b64 (base64 of the K=V lines); every other output has its key's name
+        out_keys = set(k.replace("smoke-env-b64", "smoke-env") for k in re.findall(r'"([a-z0-9-]+)"', block))
         self.assertEqual(allowed, schema_keys)
         self.assertEqual(out_keys, schema_keys)
+
+    def test_smoke_env_round_trips_byte_for_byte(self):
+        p, written = run(os.path.join(CASES, "ok-smoke-keys.yml"), self.cache)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        got = base64.b64decode(parse_output(written)["smoke-env-b64"]).decode()
+        self.assertEqual(got, SMOKE_ENV_TEXT)
+
+    def test_smoke_keys_default_to_empty(self):
+        p, written = run(os.path.join(CASES, "ok-spa-min.yml"), self.cache)
+        o = parse_output(written)
+        self.assertEqual((o["smoke-env-b64"], o["smoke-postgres"], o["smoke-random"]), ("", "", ""))
 
     def test_yq_checksum_mismatch(self):
         tc = tempfile.mkdtemp()

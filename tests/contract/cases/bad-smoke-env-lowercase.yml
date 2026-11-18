@@ -1,0 +1,4 @@
+# expect: smoke-env: greeting: name must match ^[A-Z_][A-Z0-9_]*$
+family: spa
+smoke-env:
+  greeting: hello

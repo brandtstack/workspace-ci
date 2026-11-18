@@ -1,0 +1,3 @@
+# expect: smoke-env: must be a map of name to string
+family: spa
+smoke-env: [A=1]
