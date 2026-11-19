@@ -62,9 +62,9 @@ while IFS= read -r line || [ -n "$line" ]; do
       cur="C_${key//-/_}"
       if [ "$first" = 1 ]; then printf -v "$cur" '%s' "$line"; first=0; else printf -v "$cur" '%s\n%s' "${!cur}" "$line"; fi
     fi
-  elif [[ "$line" =~ ^([a-z-]+)\<\<(.+)$ ]]; then
+  elif [[ "$line" =~ ^([a-z0-9-]+)\<\<(.+)$ ]]; then
     key="${BASH_REMATCH[1]}"; delim="${BASH_REMATCH[2]}"; printf -v "C_${key//-/_}" '%s' ""; first=1
-  elif [[ "$line" =~ ^([a-z-]+)=(.*)$ ]]; then
+  elif [[ "$line" =~ ^([a-z0-9-]+)=(.*)$ ]]; then
     printf -v "C_${BASH_REMATCH[1]//-/_}" '%s' "${BASH_REMATCH[2]}"
   fi
 done <<EOT
@@ -111,13 +111,46 @@ podman "${ARGS[@]}" || die "podman build failed"
 PORT="${BUILD_IMAGE_PORT:-8080}"
 WAIT="${BUILD_IMAGE_SMOKE_TIMEOUT:-60}"
 CID=""
-cleanup() { [ -z "$CID" ] || podman rm -f "$CID" >/dev/null 2>&1 || true; }
+# Per-run names, so a local run never collides with another one or with anything of the user's.
+PG="smoke-pg-$$"; NET="smoke-net-$$"; PG_UP=0
+ENVF="$(mktemp)"; chmod 600 "$ENVF"
+cleanup() {
+  [ -z "$CID" ] || podman rm -f "$CID" >/dev/null 2>&1 || true
+  if [ "$PG_UP" = 1 ]; then podman rm -f "$PG" >/dev/null 2>&1 || true; podman network rm "$NET" >/dev/null 2>&1 || true; fi
+  rm -f "$ENVF"
+}
 trap cleanup EXIT
+
+# As app.yml: smoke-env (base64 K=V lines) and smoke-random (NAME:BYTES) go into one env file, never printed.
+[ -z "${C_smoke_env_b64:-}" ] || printf '%s' "$C_smoke_env_b64" | base64 -d >> "$ENVF"
+set -f
+for entry in ${C_smoke_random:-}; do
+  printf '%s=%s\n' "${entry%%:*}" "$(head -c "${entry##*:}" /dev/urandom | base64 | tr -d '\n')" >> "$ENVF"
+done
+set +f
+
+# As app.yml: smoke-postgres starts a throwaway Postgres on a private network and creates each database.
+if [ -n "${C_smoke_postgres:-}" ]; then
+  podman network create "$NET" >/dev/null || die "podman network create failed"
+  PG_UP=1
+  podman run -d --name "$PG" --network "$NET" --network-alias smoke-pg \
+    -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke postgres:16.15-alpine >/dev/null || die "could not start the smoke Postgres"
+  ready=0
+  for _ in $(seq 1 30); do
+    if podman exec "$PG" pg_isready -h 127.0.0.1 -U smoke -q >/dev/null 2>&1; then ready=1; break; fi
+    sleep 1
+  done
+  [ "$ready" = 1 ] || { podman logs "$PG" >&2 || true; die "the smoke Postgres was not ready after 30 s"; }
+  set -f
+  for db in $C_smoke_postgres; do podman exec "$PG" createdb -U smoke "$db" || die "createdb $db failed"; done
+  set +f
+fi
 
 # smoke-args is word-split into flags, globbing off (same trust and same rule as app.yml: no spaces inside one flag)
 set -f
 # shellcheck disable=SC2086
-RUN=(podman run -d --sysctl net.ipv4.ip_unprivileged_port_start=0 -p "127.0.0.1:$PORT:80")
+RUN=(podman run -d --sysctl net.ipv4.ip_unprivileged_port_start=0 -p "127.0.0.1:$PORT:80" --env-file "$ENVF")
+[ "$PG_UP" = 1 ] && RUN+=(--network "$NET")
 # As app.yml: a migrate: true image runs migrations at start, and the smoke has no database.
 [ "$C_migrate" = true ] && RUN+=(-e SKIP_MIGRATIONS=1)
 # shellcheck disable=SC2206

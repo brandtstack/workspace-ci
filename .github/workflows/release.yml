@@ -129,7 +129,7 @@ jobs:
           fi
           n=$(printf '%s\n' "$APPS" | grep -c . || true)
           if [ "$n" != "1" ]; then
-            echo "::error::build.yml coolify-app must name exactly one app for a contract-mode release (got ${n}); lists are spec step 4"
+            echo "::error::build.yml coolify-app must name exactly one app for a contract-mode release (got ${n}); lists are not supported"
             exit 1
           fi
           # Interpolated into authenticated Coolify URLs below: a uuid shape only (contract/validate.jq

@@ -396,7 +396,7 @@ podman only: it reads the repo's `build.yml`, runs `npm run verify` (or `make ve
 `localhost/<repo>:dev` with the same Dockerfile, target and build args, then boots it with
 `-p 127.0.0.1:8080:80` and polls `/healthz` for 60 s. It exits non-zero on any failure and prints the
 container log. A contract with `private-registry: true` needs `NPM_TOKEN` exported. `BUILD_IMAGE_PORT`
-changes the host port and `BUILD_IMAGE_SMOKE_TIMEOUT` the 60 s wait. It does not read `smoke-env`, `smoke-postgres` or `smoke-random`, so a contract that needs them boots without them locally (CI is the check for those). Tests (fake podman): `tests/build-image/test_build_image.py`.
+changes the host port and `BUILD_IMAGE_SMOKE_TIMEOUT` the 60 s wait. It applies `smoke-env`, `smoke-random` and `smoke-postgres` the way app.yml does (one env file, a throwaway `postgres:16.15-alpine` on a per-run podman network, reachable as `smoke-pg`), and removes them afterwards. Tests (fake podman): `tests/build-image/test_build_image.py`.
 
 ## Versioning
 
