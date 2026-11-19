@@ -60,7 +60,8 @@ RUN mkdir -p /opt/migrate
 #   postinstall runs explicitly here (it fetches the engine for this platform from Prisma's CDN and checks its
 #   hash). app.yml's "Migrate CLI loads" runs the CLI with --network none, which fails if anything is fetched.
 # - Only the schema and prisma/migrations are copied, never the rest of prisma/ (seeds, dumps, .env). The schema is
-#   either prisma/schema.prisma or a multi-file prisma/schema/ directory: exactly one of the two must exist. The
+#   either prisma/schema.prisma or a multi-file prisma/schema/ directory (only its *.prisma files, sub-folders kept;
+#   it must hold at least one): exactly one of the two must exist. The
 #   prisma/ directory is bind-mounted for the copy only, so nothing else from it enters a layer.
 FROM node:24.22.3-alpine AS migrate-true
 WORKDIR /opt/migrate
@@ -80,7 +81,9 @@ RUN --mount=type=bind,source=prisma,target=/src/prisma \
     if [ -f /src/prisma/schema.prisma ] && [ ! -e /src/prisma/schema ]; then \
       cp /src/prisma/schema.prisma /opt/migrate/prisma/schema.prisma; \
     elif [ -d /src/prisma/schema ] && [ ! -e /src/prisma/schema.prisma ]; then \
-      cp -R /src/prisma/schema /opt/migrate/prisma/schema; \
+      cd /src/prisma/schema; \
+      [ -n "$(find . -type f -name '*.prisma' | head -n 1)" ] || { echo "prisma: prisma/schema/ has no *.prisma files" >&2; exit 1; }; \
+      find . -type f -name '*.prisma' -exec sh -c 'mkdir -p "$2/$(dirname "$1")" && cp "$1" "$2/$1"' _ {} /opt/migrate/prisma/schema \; ; \
     else \
       echo "prisma: need prisma/schema.prisma or prisma/schema/" >&2; exit 1; \
     fi; \

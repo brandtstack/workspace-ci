@@ -205,6 +205,18 @@ class MigratePrismaCopy(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(got, ["prisma/migrations/1_init/migration.sql", "prisma/schema/a.prisma", "prisma/schema/b.prisma"])
 
+    def test_multi_file_copies_only_prisma_files_keeping_subfolders(self):
+        r, got = self.run_copy(["schema/a.prisma", "schema/sub/x.prisma", "schema/.env", "schema/seed.sql",
+                                "schema/sub/notes.txt", "migrations/1_init/migration.sql"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(got, ["prisma/migrations/1_init/migration.sql", "prisma/schema/a.prisma", "prisma/schema/sub/x.prisma"])
+
+    def test_multi_file_dir_without_prisma_files_fails(self):
+        r, got = self.run_copy(["schema/.env", "schema/seed.sql", "migrations/1_init/migration.sql"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("prisma/schema/ has no *.prisma files", r.stderr)
+        self.assertEqual([g for g in got if "schema" in g], [])
+
     def test_neither_fails_with_the_message(self):
         r, got = self.run_copy(["migrations/1_init/migration.sql"])
         self.assertNotEqual(r.returncode, 0)
