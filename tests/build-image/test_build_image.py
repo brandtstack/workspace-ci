@@ -258,7 +258,7 @@ class BuildImage(unittest.TestCase):
         r = self.run_bi("--no-verify", self.repo("ok-smoke-keys"))
         self.assertEqual(r.returncode, 0, r.stderr)
         runs = [self.argv(c) for c in self.calls("podman", "run")]
-        pg = [x for x in runs if "postgres:16.15-alpine" in x]
+        pg = [x for x in runs if "docker.io/library/postgres:16.15-alpine" in x]
         app = [x for x in runs if "localhost/demo-app:dev" in x]
         self.assertEqual(len(pg), 1, runs)
         self.assertIn("--name smoke-pg-", pg[0])
@@ -282,6 +282,15 @@ class BuildImage(unittest.TestCase):
         nets = [self.argv(c) for c in self.calls("podman", "network")]
         self.assertTrue(any(n.startswith("network create smoke-net-") for n in nets), nets)
         self.assertTrue(any(n.startswith("network rm smoke-net-") for n in nets), nets)
+
+    def test_migrate_runs_against_the_smoke_database(self):
+        # With smoke-postgres the container migrates against it (no SKIP_MIGRATIONS); without, it still skips.
+        r = self.run_bi("--no-verify", self.repo("ok-next-migrate-pg"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        app = [self.argv(c) for c in self.calls("podman", "run") if "localhost/demo-app:dev" in self.argv(c)]
+        self.assertEqual(len(app), 1)
+        self.assertNotIn("SKIP_MIGRATIONS", app[0])
+        self.assertIn("--network smoke-net-", app[0])
 
     def test_smoke_without_dotenvx_keeps_the_image_entrypoint(self):
         self.run_bi("--no-verify", self.repo("ok-spa-min"))

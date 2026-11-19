@@ -56,6 +56,10 @@ def run_step(name, env=None, fake=None):
             f.write(FAKE_DOCKER)
         os.chmod(dk, 0o755)
         # sleep is a no-op, so the 30 s waits do not run for 30 s
+        cu = os.path.join(bin_, "curl")  # the boot step's reachability probe
+        with open(cu, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(cu, 0o755)
         sl = os.path.join(bin_, "sleep")
         with open(sl, "w") as f:
             f.write("#!/bin/sh\nexit 0\n")
@@ -110,6 +114,28 @@ class SmokeEnvFile(unittest.TestCase):
         self.assertEqual((p.returncode, content, mode), (0, b"", 0o600), p.stderr)
 
 
+class BootMigrations(unittest.TestCase):
+    N = "Boot and smoke test"
+
+    def boot(self, **kw):
+        env = {"SMOKE_ARGS": "", "FAMILY": "next", "DOTENVX": "false", "MIGRATE": "false", "SMOKE_PG": ""}
+        env.update(kw)
+        p, calls, _, _ = run_step(self.N, env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return [c for c in calls if c.startswith("run -d --name smoke ")][0]
+
+    def test_migrate_without_a_database_skips_migrations(self):
+        self.assertIn("-e SKIP_MIGRATIONS=1", self.boot(MIGRATE="true"))
+
+    def test_migrate_with_the_smoke_database_runs_them(self):
+        run = self.boot(MIGRATE="true", SMOKE_PG="app")
+        self.assertNotIn("SKIP_MIGRATIONS", run)
+        self.assertIn("--network smoke-net", run)
+
+    def test_no_migrate_adds_nothing(self):
+        self.assertNotIn("SKIP_MIGRATIONS", self.boot(SMOKE_PG="app"))
+
+
 class SmokePostgres(unittest.TestCase):
     N = "Start the smoke Postgres"
 
@@ -117,7 +143,7 @@ class SmokePostgres(unittest.TestCase):
         p, calls, _, _ = run_step(self.N, {"SMOKE_PG": "one two_2"})
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(calls[0], "network create smoke-net")
-        self.assertEqual(calls[1], "run -d --name smoke-pg --network smoke-net -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke postgres:16.15-alpine")
+        self.assertEqual(calls[1], "run -d --name smoke-pg --network smoke-net -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke docker.io/library/postgres:16.15-alpine")
         self.assertIn("exec smoke-pg createdb -U smoke one", calls)
         self.assertIn("exec smoke-pg createdb -U smoke two_2", calls)
 

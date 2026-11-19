@@ -2,7 +2,7 @@
 # CMD of every shared next image (both runtimes; under dotenvx the ENTRYPOINT wrapper runs this, so the
 # environment is already decrypted). With contract `migrate: true` the image has /opt/migrate/prisma.config.ts:
 # apply pending migrations first, and refuse to start the server if that fails. SKIP_MIGRATIONS (any non-empty
-# value) skips them: the CI smoke has no database. Without `migrate`, /opt/migrate is empty and this only execs.
+# value) skips them: the CI smoke has no database unless the contract sets smoke-postgres. Without `migrate`, /opt/migrate is empty and this only execs.
 #
 # The migration runs with a minimal environment: PATH, HOME, CHECKPOINT_DISABLE and DATABASE_URL only, never
 # the app's other (decrypted) secrets. DATABASE_URL there is MIGRATE_DATABASE_URL when set (a schema-owner

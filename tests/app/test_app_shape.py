@@ -249,7 +249,7 @@ class AppShape(unittest.TestCase):
         run = p["run"]
         self.assertNotIn("${{", run)
         self.assertIn("docker network create smoke-net", run)
-        self.assertIn("docker run -d --name smoke-pg --network smoke-net -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke postgres:16.15-alpine", run)
+        self.assertIn("docker run -d --name smoke-pg --network smoke-net -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke docker.io/library/postgres:16.15-alpine", run)
         self.assertIn("pg_isready -h 127.0.0.1", run)  # TCP: the init-time server answers on the socket only
         self.assertIn("createdb", run)
         self.assertLess(names.index("Image contract (non-root user, exposed port 80)"), names.index("Start the smoke Postgres"))

@@ -471,7 +471,7 @@ jobs:
           set -euo pipefail
           set -f
           docker network create smoke-net
-          docker run -d --name smoke-pg --network smoke-net -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke postgres:16.15-alpine
+          docker run -d --name smoke-pg --network smoke-net -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke docker.io/library/postgres:16.15-alpine
           # -h 127.0.0.1: the image's init-time server listens on the socket only, so only the real one answers over TCP.
           ready=0
           for _ in $(seq 1 30); do
@@ -500,8 +500,9 @@ jobs:
           # Unquoted on purpose: SMOKE_ARGS is word-split into docker run flags (globbing off), so no
           # argument may contain a space. It carries the same trust as the caller's own CI code.
           set -f
-          # migrate: true images run `prisma migrate deploy` at start; the smoke has no database.
-          if [ "$MIGRATE" = true ]; then SMOKE_ARGS="-e SKIP_MIGRATIONS=1 ${SMOKE_ARGS}"; fi
+          # migrate: true images run `prisma migrate deploy` at start. Without smoke-postgres the smoke has no
+          # database, so migrations are skipped; with it, the container migrates against the throwaway one.
+          if [ "$MIGRATE" = true ] && [ -z "$SMOKE_PG" ]; then SMOKE_ARGS="-e SKIP_MIGRATIONS=1 ${SMOKE_ARGS}"; fi
           # smoke-postgres: the app container joins the network the throwaway Postgres is on.
           if [ -n "$SMOKE_PG" ]; then SMOKE_ARGS="--network smoke-net ${SMOKE_ARGS}"; fi
           if [ "$FAMILY" = next ] && [ "$DOTENVX" = true ]; then

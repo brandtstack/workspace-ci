@@ -1,0 +1,7 @@
+# expect: ok
+family: next
+prisma: true
+migrate: true
+smoke-postgres: [app]
+smoke-env:
+  DATABASE_URL: "postgresql://smoke:smoke@smoke-pg:5432/app?sslmode=disable"

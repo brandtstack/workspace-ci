@@ -69,7 +69,7 @@ The repo must provide:
     applied before the failure stays, and Prisma records the migration as failed. Every later start then
     stops on `P3009` until someone fixes the database and runs `prisma migrate resolve --rolled-back <name>`
     (or `--applied`) against it.
-  - app.yml smokes the image with `SKIP_MIGRATIONS=1` (no database), and its "Migrate CLI loads" step runs
+  - app.yml smokes the image with `SKIP_MIGRATIONS=1` when the contract has no `smoke-postgres` (no database); with `smoke-postgres` the container migrates against the throwaway database instead. Its "Migrate CLI loads" step runs
     `migrate status` against an unreachable URL and requires Prisma's `P1001`, which proves the CLI, the
     config and its imports load. `ci / integration` runs the migrations against a real Postgres.
 
@@ -148,7 +148,7 @@ are never a build arg, never reach Coolify, and carry no real secret. Do not put
 |---|---|---|
 | `smoke-env` | map of `NAME: value` | Each pair goes into one `--env-file` for the smoke container. A value may hold spaces, quotes and `=`, but no line break. Names match `^[A-Z_][A-Z0-9_]*$`. |
 | `smoke-random` | map of `NAME: bytes` | Each name is set, per run, to `bytes` fresh random bytes as base64 (`bytes` is an integer from 16 to 64): for KEK-style keys. A name may not also be in `smoke-env`. |
-| `smoke-postgres` | list of 1 to 4 database names (`^[a-z][a-z0-9_]{0,30}$`) | Starts a throwaway `postgres:16.15-alpine` beside the smoke container on a private network and creates each database. |
+| `smoke-postgres` | list of 1 to 4 database names (`^[a-z][a-z0-9_]{0,30}$`) | Starts a throwaway `docker.io/library/postgres:16.15-alpine` beside the smoke container on a private network and creates each database. |
 
 The smoke database URL is fixed: `postgresql://smoke:smoke@smoke-pg:5432/<name>?sslmode=disable`. An app maps it to
 its own env names through `smoke-env`, for example `DATABASE_URL: "postgresql://smoke:smoke@smoke-pg:5432/app?sslmode=disable"`.

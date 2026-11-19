@@ -134,7 +134,7 @@ if [ -n "${C_smoke_postgres:-}" ]; then
   podman network create "$NET" >/dev/null || die "podman network create failed"
   PG_UP=1
   podman run -d --name "$PG" --network "$NET" --network-alias smoke-pg \
-    -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke postgres:16.15-alpine >/dev/null || die "could not start the smoke Postgres"
+    -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke docker.io/library/postgres:16.15-alpine >/dev/null || die "could not start the smoke Postgres"
   ready=0
   for _ in $(seq 1 30); do
     if podman exec "$PG" pg_isready -h 127.0.0.1 -U smoke -q >/dev/null 2>&1; then ready=1; break; fi
@@ -151,8 +151,9 @@ set -f
 # shellcheck disable=SC2086
 RUN=(podman run -d --sysctl net.ipv4.ip_unprivileged_port_start=0 -p "127.0.0.1:$PORT:80" --env-file "$ENVF")
 [ "$PG_UP" = 1 ] && RUN+=(--network "$NET")
-# As app.yml: a migrate: true image runs migrations at start, and the smoke has no database.
-[ "$C_migrate" = true ] && RUN+=(-e SKIP_MIGRATIONS=1)
+# As app.yml: a migrate: true image runs migrations at start; with no smoke-postgres the smoke has no database,
+# so they are skipped, and with it the container migrates against the throwaway one.
+[ "$C_migrate" = true ] && [ "$PG_UP" != 1 ] && RUN+=(-e SKIP_MIGRATIONS=1)
 # shellcheck disable=SC2206
 RUN+=($C_smoke_args)
 if [ "$FAMILY" = next ] && [ "$C_dotenvx" = true ]; then
