@@ -105,6 +105,8 @@ jobs:
           INPUT_UUID: ${{ inputs.coolify-app-uuid }}
           APPS: ${{ steps.contract.outputs.coolify-app }}
           FAMILY: ${{ steps.contract.outputs.family }}
+          NODE: ${{ steps.contract.outputs.node }}
+          GO: ${{ steps.contract.outputs.go }}
         run: |
           set -euo pipefail
           if [ "$CONTRACT" != "true" ]; then
@@ -115,13 +117,19 @@ jobs:
             echo "::error::contract: true takes the Coolify app from .github/build.yml; drop the coolify-app-uuid input"
             exit 1
           fi
+          # The toolchain picks the Coolify settings for a custom app (the sync step): the contract names exactly
+          # one of node and go for custom (validate.jq), and next/spa/go carry theirs by family.
           case "$FAMILY" in
-            next|spa|go) ;;
-            *) echo "::error::contract-mode release supports families next, spa and go; '${FAMILY}' is spec step 4"; exit 1 ;;
+            next|spa|go|custom) ;;
+            *) echo "::error::contract-mode release supports families next, spa, go and custom; got '${FAMILY}'"; exit 1 ;;
           esac
+          if [ -n "${NODE:-}" ]; then toolchain=node
+          elif [ -n "${GO:-}" ]; then toolchain=go
+          else echo "::error::contract: no node or go in build.yml, so no toolchain for family '${FAMILY}'"; exit 1
+          fi
           n=$(printf '%s\n' "$APPS" | grep -c . || true)
           if [ "$n" != "1" ]; then
-            echo "::error::build.yml coolify-app must name exactly one app for a contract-mode release (got ${n}); lists are spec step 4"
+            echo "::error::build.yml coolify-app must name exactly one app for a contract-mode release (got ${n}); lists are not supported"
             exit 1
           fi
           # Interpolated into authenticated Coolify URLs below: a uuid shape only (contract/validate.jq
@@ -131,8 +139,9 @@ jobs:
             exit 1
           fi
           echo "family=${FAMILY}" >> "$GITHUB_OUTPUT"
+          echo "toolchain=${toolchain}" >> "$GITHUB_OUTPUT"
           echo "uuid=${APPS}" >> "$GITHUB_OUTPUT"
-          echo "contract target: ${APPS} (family ${FAMILY})"
+          echo "contract target: ${APPS} (family ${FAMILY}, toolchain ${toolchain})"
 
       - name: Skip if this commit is already version-tagged
         id: guard
@@ -256,6 +265,7 @@ jobs:
         env:
           UUID:   ${{ steps.target.outputs.uuid }}
           FAMILY: ${{ steps.target.outputs.family }}
+          TOOLCHAIN: ${{ steps.target.outputs.toolchain }}
           BEARER: ${{ secrets.COOLIFY_TOKEN }}
           CFID:   ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CFSEC:  ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
@@ -265,12 +275,19 @@ jobs:
             echo "::error::contract mode needs COOLIFY_TOKEN, CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET."
             exit 1
           fi
+          # A custom app takes its toolchain's settings (a node image is checked like next/spa; a go image like go).
           case "$FAMILY" in
-            next|spa)
+            custom) kind="${TOOLCHAIN:-}" ;;
+            go) kind=go ;;
+            next|spa) kind=node ;;
+            *) kind="" ;;
+          esac
+          case "$kind" in
+            node)
               want='{"ports_exposes":"80","health_check_enabled":true,"health_check_type":"http","health_check_scheme":"http","health_check_method":"GET","health_check_host":"127.0.0.1","health_check_port":"80","health_check_path":"/healthz","health_check_return_code":200,"health_check_interval":5,"health_check_timeout":5,"health_check_retries":10,"health_check_start_period":5}' ;;
             go)
               want='{"ports_exposes":"80","health_check_enabled":false}' ;;
-            *) echo "::error::no Coolify settings for family '${FAMILY}'"; exit 1 ;;
+            *) echo "::error::no Coolify settings for family '${FAMILY}' with toolchain '${TOOLCHAIN:-}'"; exit 1 ;;
           esac
           API="https://coolify.brandtstack.com/api/v1/applications/${UUID}"
           R="$RUNNER_TEMP/coolify-sync.json"
@@ -307,7 +324,7 @@ jobs:
             echo "::error::Coolify did not store the contract settings; nothing was promoted, tagged or deployed."
             exit 1
           fi
-          echo "Coolify ${UUID} matches build.yml (family ${FAMILY}): $(jq -c 'keys' <<<"$want")"
+          echo "Coolify ${UUID} matches build.yml (family ${FAMILY}, toolchain ${kind}): $(jq -c 'keys' <<<"$want")"
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         if: steps.guard.outputs.skip == 'false' && inputs.publish-image

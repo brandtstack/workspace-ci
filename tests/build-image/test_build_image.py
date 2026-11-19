@@ -244,6 +244,54 @@ class BuildImage(unittest.TestCase):
         self.assertEqual(len(rm), 1)
         self.assertIn("fakecontainerid123", rm[0])
 
+    def test_smoke_keys_match_app_yml(self):
+        # smoke-env, smoke-random and smoke-postgres apply locally as in app.yml: one env file, a throwaway Postgres
+        # on a private network, the app container on that network; everything removed afterwards.
+        envcopy = os.path.join(self.tmp, "envcopy")
+        body = BODIES["podman"].replace(
+            'case "$1" in',
+            'case "$1" in\n  run) for a in "$@"; do case "$prev" in --env-file) cp "$a" "' + envcopy + '" ;; esac; prev="$a"; done; echo fakecontainerid123 ;;', 1)
+        p = os.path.join(self.bin, "podman")
+        with open(p, "w") as f:
+            f.write(FAKE.format(name="podman", body=body,
+                                log='printf \'%s cwd=%s |%s\\n\' "podman" "$PWD" "$*" >> "$FAKE_LOG"\n'))
+        r = self.run_bi("--no-verify", self.repo("ok-smoke-keys"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        runs = [self.argv(c) for c in self.calls("podman", "run")]
+        pg = [x for x in runs if "docker.io/library/postgres:16.15-alpine" in x]
+        app = [x for x in runs if "localhost/demo-app:dev" in x]
+        self.assertEqual(len(pg), 1, runs)
+        self.assertIn("--name smoke-pg-", pg[0])
+        self.assertIn("-e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke", pg[0])
+        self.assertEqual(len(app), 1, runs)
+        self.assertIn("--env-file", app[0])
+        self.assertIn("--network smoke-net-", app[0])
+        execs = " ".join(self.argv(c) for c in self.calls("podman", "exec"))
+        self.assertIn("createdb -U smoke one", execs)
+        self.assertIn("createdb -U smoke two_2", execs)
+        with open(envcopy) as f:
+            lines = f.read().splitlines()
+        self.assertIn("GREETING=hello world", lines)
+        self.assertIn("TRUSTED=a=b c=d $HOME \"q\" 'r' #not-a-comment", lines)
+        self.assertIn("EMPTY=", lines)
+        keys = {l.split("=", 1)[0]: l.split("=", 1)[1] for l in lines}
+        self.assertEqual(len(base64.b64decode(keys["FIXTURE_KEY"])), 32)
+        self.assertEqual(len(base64.b64decode(keys["OTHER_KEY"])), 64)
+        rm = " ".join(self.argv(c) for c in self.calls("podman", "rm"))
+        self.assertIn("smoke-pg-", rm)
+        nets = [self.argv(c) for c in self.calls("podman", "network")]
+        self.assertTrue(any(n.startswith("network create smoke-net-") for n in nets), nets)
+        self.assertTrue(any(n.startswith("network rm smoke-net-") for n in nets), nets)
+
+    def test_migrate_runs_against_the_smoke_database(self):
+        # With smoke-postgres the container migrates against it (no SKIP_MIGRATIONS); without, it still skips.
+        r = self.run_bi("--no-verify", self.repo("ok-next-migrate-pg"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        app = [self.argv(c) for c in self.calls("podman", "run") if "localhost/demo-app:dev" in self.argv(c)]
+        self.assertEqual(len(app), 1)
+        self.assertNotIn("SKIP_MIGRATIONS", app[0])
+        self.assertIn("--network smoke-net-", app[0])
+
     def test_smoke_without_dotenvx_keeps_the_image_entrypoint(self):
         self.run_bi("--no-verify", self.repo("ok-spa-min"))
         run = self.argv(self.calls("podman", "run")[0])
@@ -286,7 +334,9 @@ class BuildImage(unittest.TestCase):
             self.assertNotIn("http://localhost", l)
         with open(SCRIPT) as f:
             src = f.read()
-        self.assertNotIn("docker", src.replace("dockerfile", "").replace("Dockerfile", "").replace("DOCKERFILE", "").lower())
+        # docker.io is the registry host of the fully qualified Postgres image, not the Docker tool.
+        self.assertIn("docker.io/library/postgres:16.15-alpine", src)
+        self.assertNotIn("docker", src.replace("docker.io/library/", "").replace("dockerfile", "").replace("Dockerfile", "").replace("DOCKERFILE", "").lower())
         self.assertNotIn("http://localhost", src)
 
     def test_default_dir_is_cwd_and_symlink_works(self):

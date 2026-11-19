@@ -1,0 +1,3 @@
+# expect: smoke-postgres: must be a list of 1 to 4 database names
+family: spa
+smoke-postgres: []

@@ -379,6 +379,16 @@ Repo-specific image probes do not carry over: tilde's required `headers` job bui
 Dockerfile, so on adoption it must move to pulling `:sha-<head>` after `ci / image` instead (spec step 3
 handles it).
 
+### Custom family and smoke keys
+
+`family: custom` keeps the repo's own Dockerfile, with exactly one of `node` or `go`. The release writes the Coolify
+settings of that toolchain (node: next/spa's http check; go: check off, image `HEALTHCHECK` required). Three optional
+keys make an image that needs env, random keys or a database bootable in the smoke: `smoke-env` (a map, passed as an
+`--env-file`, so values may contain spaces), `smoke-random` (a map of name to byte count, each set per run to fresh
+random base64) and `smoke-postgres` (database names created in a throwaway Postgres at
+`postgresql://smoke:smoke@smoke-pg:5432/<name>?sslmode=disable`). They are smoke-only. Rules, the image gates and a
+wrapper-ENTRYPOINT recipe: [`dockerfiles/README.md`](dockerfiles/README.md#custom).
+
 ### Building it locally
 
 `scripts/build-image [--no-verify] [--no-smoke] [<repo dir>]` builds what the `image` job builds, with
@@ -386,7 +396,7 @@ podman only: it reads the repo's `build.yml`, runs `npm run verify` (or `make ve
 `localhost/<repo>:dev` with the same Dockerfile, target and build args, then boots it with
 `-p 127.0.0.1:8080:80` and polls `/healthz` for 60 s. It exits non-zero on any failure and prints the
 container log. A contract with `private-registry: true` needs `NPM_TOKEN` exported. `BUILD_IMAGE_PORT`
-changes the host port and `BUILD_IMAGE_SMOKE_TIMEOUT` the 60 s wait. Tests (fake podman): `tests/build-image/test_build_image.py`.
+changes the host port and `BUILD_IMAGE_SMOKE_TIMEOUT` the 60 s wait. It applies `smoke-env`, `smoke-random` and `smoke-postgres` the way app.yml does (one env file, a throwaway `docker.io/library/postgres:16.15-alpine` on a per-run podman network, reachable as `smoke-pg`), and removes them afterwards. Tests (fake podman): `tests/build-image/test_build_image.py`.
 
 ## Versioning
 

@@ -1,0 +1,4 @@
+# expect: smoke-random: KEY: byte count must be an integer from 16 to 64
+family: spa
+smoke-random:
+  KEY: "32"

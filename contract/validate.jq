@@ -9,10 +9,13 @@ def nonempty: isstr and length > 0;
 def badpath: isstr and (startswith("/") or test("(\\A|/)\\.\\.(/|\\z)"));
 
 def keys_allowed: ["family","dockerfile","node","go","prisma","dotenvx","integration",
-  "favicon","build-args","private-registry","coolify-app","smoke-args","go-main","go-dir","migrate"];
+  "favicon","build-args","private-registry","coolify-app","smoke-args","go-main","go-dir","migrate",
+  "smoke-env","smoke-postgres","smoke-random"];
+def envname: "\\A[A-Z_][A-Z0-9_]*\\z";
 def bools: ["prisma","dotenvx","integration","private-registry","migrate"];
 
 . as $c
+| envname as $envname
 | if $c == null then {errors: ["<file>: file is empty"]}
   elif ($c | type) != "object" then {errors: ["<root>: top level must be a map of keys"]}
   else
@@ -83,6 +86,40 @@ def bools: ["prisma","dotenvx","integration","private-registry","migrate"];
           else "coolify-app: must be a string or a non-empty list of strings" end)
        else empty end),
       (if has("smoke-args") and ($c["smoke-args"] | isstr | not) then "smoke-args: must be a string" else empty end),
+      # smoke-env: a map written to an --env-file, so a value may hold spaces, quotes and `=`, but no line break
+      (if has("smoke-env") then
+         (if ($c["smoke-env"] | type) != "object" then "smoke-env: must be a map of name to string"
+          else ($c["smoke-env"] | to_entries[]
+            | (if (.key | test($envname) | not) then "smoke-env: \(.key): name must match ^[A-Z_][A-Z0-9_]*$"
+               elif (.value | isstr | not) or (.value | test("[\n\r]")) then "smoke-env: \(.key): value must be a single-line string"
+               else empty end))
+          end)
+       else empty end),
+      # smoke-random: name -> byte count; the smoke step sets each name to that many fresh random bytes, base64
+      (if has("smoke-random") then
+         (if ($c["smoke-random"] | type) != "object" then "smoke-random: must be a map of name to byte count"
+          else ($c["smoke-random"] | to_entries[] | . as $e
+            | (if (.key | test($envname) | not) then "smoke-random: \(.key): name must match ^[A-Z_][A-Z0-9_]*$"
+               elif (.value | type) != "number" or (.value != (.value | floor)) or .value < 16 or .value > 64
+                 then "smoke-random: \(.key): byte count must be an integer from 16 to 64"
+               elif (($c["smoke-env"] | type) == "object") and ($c["smoke-env"] | has($e.key))
+                 then "smoke-random: \(.key) is also in smoke-env"
+               else empty end))
+          end)
+       else empty end),
+      # smoke-postgres: database names created in a throwaway Postgres beside the smoke container
+      (if has("smoke-postgres") then
+         (if ($c["smoke-postgres"] | type) != "array" or ($c["smoke-postgres"] | length) < 1 or ($c["smoke-postgres"] | length) > 4
+          then "smoke-postgres: must be a list of 1 to 4 database names"
+          else ($c["smoke-postgres"] as $l | $l | to_entries[] | . as $e
+            | (if (.value | isstr | not) or (.value | test("\\A[a-z][a-z0-9_]{0,30}\\z") | not)
+                 then "smoke-postgres: \(.value | tostring): name must match ^[a-z][a-z0-9_]{0,30}$"
+               elif (["postgres","template0","template1"] | index($e.value)) != null
+                 then "smoke-postgres: \($e.value): name is reserved (postgres, template0 and template1 exist already)"
+               elif ($l | index($e.value)) != $e.key then "smoke-postgres: \(.value) is listed twice"
+               else empty end))
+          end)
+       else empty end),
       # go-only keys
       (("go-main","go-dir") as $k | select(has($k)) |
          (if $fam != "go" then "\($k): only allowed with family go"
@@ -110,7 +147,11 @@ def bools: ["prisma","dotenvx","integration","private-registry","migrate"];
           "coolify-app": lst("coolify-app"),
           "smoke-args": ($c["smoke-args"] // ""),
           "go-main": (if $fam == "go" then ($c["go-main"] // "./cmd/\($defname)") else "" end),
-          "go-dir": (if $fam == "go" then ($c["go-dir"] // ".") else "" end)
+          "go-dir": (if $fam == "go" then ($c["go-dir"] // ".") else "" end),
+          # base64 of the K=V lines, each newline-terminated: one line, so it travels as a plain output
+          "smoke-env-b64": (if has("smoke-env") then [$c["smoke-env"] | to_entries[] | "\(.key)=\(.value)\n"] | join("") | @base64 else "" end),
+          "smoke-postgres": (if has("smoke-postgres") then $c["smoke-postgres"] | join(" ") else "" end),
+          "smoke-random": (if has("smoke-random") then [$c["smoke-random"] | to_entries[] | "\(.key):\(.value)"] | join(" ") else "" end)
         }}
       end
   end

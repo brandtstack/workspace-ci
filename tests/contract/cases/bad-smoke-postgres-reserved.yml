@@ -1,0 +1,4 @@
+# expect: smoke-postgres: postgres: name is reserved (postgres, template0 and template1 exist already)
+# expect: smoke-postgres: template1: name is reserved (postgres, template0 and template1 exist already)
+family: spa
+smoke-postgres: [postgres, ok_name, template1]

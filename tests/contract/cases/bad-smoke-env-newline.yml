@@ -1,0 +1,4 @@
+# expect: smoke-env: GREETING: value must be a single-line string
+family: spa
+smoke-env:
+  GREETING: "hello\nworld"

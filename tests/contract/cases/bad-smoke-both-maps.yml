@@ -1,0 +1,6 @@
+# expect: smoke-random: SECRET is also in smoke-env
+family: spa
+smoke-env:
+  SECRET: x
+smoke-random:
+  SECRET: 32

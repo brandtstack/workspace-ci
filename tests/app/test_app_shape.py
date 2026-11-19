@@ -19,7 +19,8 @@ ON = WF.get("on", WF.get(True))
 JOBS = WF["jobs"]
 PIN = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+@[0-9a-f]{40}$")
 OUTPUTS = ["family", "dockerfile", "node", "go", "prisma", "dotenvx", "integration", "favicon",
-           "build-args", "private-registry", "coolify-app", "smoke-args", "go-main", "go-dir", "migrate"]
+           "build-args", "private-registry", "coolify-app", "smoke-args", "go-main", "go-dir", "migrate",
+           "smoke-env-b64", "smoke-postgres", "smoke-random"]
 
 
 def steps(job):
@@ -159,6 +160,8 @@ class AppShape(unittest.TestCase):
         self.assertTrue(bypass[0].endswith("--entrypoint /bin/sh ci-image:local /app/start.sh"), bypass[0])
         plain = [l for l in runs_ if "--entrypoint" not in l][0]
         self.assertTrue(plain.endswith("$SMOKE_ARGS ci-image:local"), plain)
+        for l in runs_:  # both smoke starts read the generated env file
+            self.assertIn('--env-file "$RUNNER_TEMP/smoke.env"', l)
 
     def test_custom_gets_the_public_build_env(self):
         b = find("image", "docker/build-push-action@")[0]["with"]["build-args"]
@@ -204,11 +207,95 @@ class AppShape(unittest.TestCase):
         go = [s for s in steps("image") if "docker exec smoke /app healthcheck" in s.get("run", "")]
         self.assertEqual(len(go), 1)
         self.assertEqual(go[0]["if"], "needs.verify.outputs.family == 'go'")
-        self.assertIn(".State.Health.Status", go[0]["run"])
+        self.assertIn('bash "$RUNNER_TEMP/ws-ci/scripts/wait-healthy" smoke', go[0]["run"])
+        self.assertNotIn(".State.Health.Status", go[0]["run"])  # one copy of the wait: scripts/wait-healthy
+        self.assertLess(go[0]["run"].index("/app healthcheck"), go[0]["run"].index("wait-healthy"))
         names = [s.get("name", "") for s in steps("image")]
         # After the boot step (the container exists), before the teardown.
         self.assertLess(names.index("Boot and smoke test"), names.index(go[0]["name"]))
         self.assertLess(names.index(go[0]["name"]), names.index("Tear down"))
+
+    def test_smoke_env_file_step(self):
+        names = [s.get("name", "") for s in steps("image")]
+        prep = [s for s in steps("image") if s.get("name") == "Prepare the smoke env file"]
+        self.assertEqual(len(prep), 1)
+        p = prep[0]
+        self.assertNotIn("if", p)  # always: the env file always exists, possibly empty
+        self.assertEqual(p["env"], {
+            "SMOKE_ENV_B64": "${{ needs.verify.outputs.smoke-env-b64 }}",
+            "SMOKE_RANDOM": "${{ needs.verify.outputs.smoke-random }}"})
+        run = p["run"]
+        self.assertNotIn("${{", run)
+        self.assertIn('"$RUNNER_TEMP/smoke.env"', run)
+        self.assertIn("umask 077", run)  # mode 600 from the first byte
+        self.assertIn("chmod 600", run)
+        self.assertIn("base64 -d", run)
+        self.assertIn("/dev/urandom", run)
+        # Never printed: nothing reads the file back to the log, no xtrace.
+        self.assertNotRegex(run, r"\b(cat|head -n|tail|grep|sed|awk)\b[^\n]*smoke\.env")
+        self.assertNotIn("set -x", run)
+        self.assertNotIn("echo \"$SMOKE", run)
+        self.assertLess(names.index("Prepare the smoke env file"), names.index("Boot and smoke test"))
+        # Removed in Tear down, which always runs.
+        td = [s for s in steps("image") if s.get("name") == "Tear down"][0]
+        self.assertEqual(td["if"], "always()")
+        self.assertIn('rm -f "$RUNNER_TEMP/smoke.env"', td["run"])
+
+    def test_smoke_postgres_steps(self):
+        names = [s.get("name", "") for s in steps("image")]
+        pg = [s for s in steps("image") if s.get("name") == "Start the smoke Postgres"]
+        self.assertEqual(len(pg), 1)
+        p = pg[0]
+        self.assertEqual(p["if"], "needs.verify.outputs.smoke-postgres != ''")
+        self.assertEqual(p["env"], {"SMOKE_PG": "${{ needs.verify.outputs.smoke-postgres }}"})
+        run = p["run"]
+        self.assertNotIn("${{", run)
+        self.assertIn("docker network create smoke-net", run)
+        self.assertIn("docker run -d --name smoke-pg --network smoke-net -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke docker.io/library/postgres:16.15-alpine", run)
+        self.assertIn("pg_isready -h 127.0.0.1", run)  # TCP: the init-time server answers on the socket only
+        self.assertIn("createdb", run)
+        self.assertLess(names.index("Image contract (non-root user, exposed port 80)"), names.index("Start the smoke Postgres"))
+        self.assertLess(names.index("Start the smoke Postgres"), names.index("Boot and smoke test"))
+        boot = [s for s in steps("image") if s.get("name") == "Boot and smoke test"][0]
+        self.assertEqual(boot["env"]["SMOKE_PG"], "${{ needs.verify.outputs.smoke-postgres }}")
+        self.assertIn("--network smoke-net", boot["run"])
+        # Cleanup lives in Tear down (the smoke container outlives the start step), not in a trap.
+        td = [s for s in steps("image") if s.get("name") == "Tear down"][0]
+        self.assertIn("docker rm -f smoke smoke-pg", td["run"])
+        self.assertIn("docker network rm smoke-net", td["run"])
+        self.assertNotIn("trap", run)
+
+    def test_custom_go_healthcheck_step(self):
+        names = [s.get("name", "") for s in steps("image")]
+        gate = [s for s in steps("image") if s.get("name") == "Custom go image HEALTHCHECK"]
+        self.assertEqual(len(gate), 1)
+        g = gate[0]
+        self.assertEqual(g["if"], "needs.verify.outputs.family == 'custom' && needs.verify.outputs.go != ''")
+        run = g["run"]
+        self.assertNotIn("${{", run)
+        self.assertIn("custom go image has no HEALTHCHECK", run)
+        self.assertIn("Config.Healthcheck", run)
+        self.assertIn('bash "$RUNNER_TEMP/ws-ci/scripts/wait-healthy" smoke', run)
+        self.assertNotIn(".State.Health.Status", run)
+        self.assertLess(run.index("custom go image has no HEALTHCHECK"), run.index("wait-healthy"))
+        self.assertNotIn("docker exec", run)  # a custom binary has its own name: nothing is exec'd
+        self.assertLess(names.index("Boot and smoke test"), names.index("Custom go image HEALTHCHECK"))
+        self.assertLess(names.index("Custom go image HEALTHCHECK"), names.index("Tear down"))
+        # The family == 'go' step is untouched.
+        go = [s for s in steps("image") if "docker exec smoke /app healthcheck" in s.get("run", "")]
+        self.assertEqual(len(go), 1)
+        self.assertEqual(go[0]["if"], "needs.verify.outputs.family == 'go'")
+
+    def test_wait_healthy_script_is_on_the_runner(self):
+        # Both users run it from the workspace-ci copy the image job moves to $RUNNER_TEMP/ws-ci.
+        ss = steps("image")
+        i = [k for k, x in enumerate(ss) if x.get("with", {}).get("path") == ".ws-ci"][0]
+        self.assertIn('mv "$GITHUB_WORKSPACE/.ws-ci" "$RUNNER_TEMP/ws-ci"', ss[i + 1]["run"])
+        users = [s for s in ss if "wait-healthy" in s.get("run", "")]
+        self.assertEqual(len(users), 2)
+        for u in users:
+            self.assertGreater(ss.index(u), i + 1)
+        self.assertTrue(os.access(os.path.join(HERE, "..", "..", "scripts", "wait-healthy"), os.X_OK))
 
     def test_publish_guard(self):
         pub = [s for s in steps("image") if s.get("uses", "").startswith("docker/login-action@")

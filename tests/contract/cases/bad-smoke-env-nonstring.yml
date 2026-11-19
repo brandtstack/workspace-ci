@@ -1,0 +1,4 @@
+# expect: smoke-env: PORT: value must be a single-line string
+family: spa
+smoke-env:
+  PORT: 80
