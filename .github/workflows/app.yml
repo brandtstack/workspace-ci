@@ -559,23 +559,13 @@ jobs:
             exit 1
           fi
           echo "healthcheck subcommand OK"
-          status=""
-          for _ in $(seq 1 30); do
-            status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' smoke)"
-            [ "$status" = healthy ] && break
-            sleep 1
-          done
-          if [ "$status" != healthy ]; then
-            echo "::error::State.Health.Status is '${status}' after 30 s, want healthy"
-            docker inspect --format '{{json .State.Health}}' smoke || true
-            docker logs smoke || true
-            exit 1
-          fi
+          # The wait is sized from the container's own HEALTHCHECK (scripts/wait-healthy).
+          bash "$RUNNER_TEMP/ws-ci/scripts/wait-healthy" smoke
           echo "image HEALTHCHECK healthy"
 
       # custom + go images: no binary name to exec (each repo's is its own), so the gate is on the image itself:
       # it must declare a HEALTHCHECK (Coolify's check is off for go, so this is the only one) and the smoke
-      # container must reach healthy under it.
+      # container must reach healthy under it, within a budget sized from that HEALTHCHECK (scripts/wait-healthy).
       - name: Custom go image HEALTHCHECK
         if: needs.verify.outputs.family == 'custom' && needs.verify.outputs.go != ''
         run: |
@@ -587,18 +577,7 @@ jobs:
               echo "::error::custom go image has no HEALTHCHECK (dockerfiles/README.md \"custom\": an exec-form HEALTHCHECK is required for go)"
               exit 1 ;;
           esac
-          status=""
-          for _ in $(seq 1 30); do
-            status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' smoke)"
-            [ "$status" = healthy ] && break
-            sleep 1
-          done
-          if [ "$status" != healthy ]; then
-            echo "::error::State.Health.Status is '${status}' after 30 s, want healthy"
-            docker inspect --format '{{json .State.Health}}' smoke || true
-            docker logs smoke || true
-            exit 1
-          fi
+          bash "$RUNNER_TEMP/ws-ci/scripts/wait-healthy" smoke
           echo "image HEALTHCHECK healthy"
 
       # migrate: true. Proves the packaging of /opt/migrate (CLI, its deps, prisma.config.ts and its imports,

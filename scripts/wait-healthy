@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# wait-healthy <container>: wait until the container's image HEALTHCHECK reports healthy, or fail.
+# Used by app.yml's image job (go steps), from the checked-out workspace-ci: $RUNNER_TEMP/ws-ci/scripts/wait-healthy.
+# The budget comes from the container's own Config.Healthcheck, not a constant: a HEALTHCHECK is healthy after the
+# first passing probe, but a slow start burns StartPeriod and then Interval * (Retries + 1) before it can be called
+# unhealthy. budget = StartPeriod + Interval * (Retries + 1) + 10 s, with Docker's defaults for a field left at 0
+# (interval 30 s, start period 0, retries 3), clamped to 30..300 s. inspect reports durations in nanoseconds.
+set -uo pipefail
+c="${1:?usage: wait-healthy <container>}"
+
+read -r interval_ns start_ns retries < <(
+  docker inspect --format '{{if .Config.Healthcheck}}{{printf "%d %d %d" .Config.Healthcheck.Interval .Config.Healthcheck.StartPeriod .Config.Healthcheck.Retries}}{{end}}' "$c"
+) || true
+interval=$(( ${interval_ns:-0} / 1000000000 ))
+start=$(( ${start_ns:-0} / 1000000000 ))
+retries=${retries:-0}
+[ "$interval" -gt 0 ] || interval=30
+[ "$retries" -gt 0 ] || retries=3
+budget=$(( start + interval * (retries + 1) + 10 ))
+[ "$budget" -ge 30 ] || budget=30
+[ "$budget" -le 300 ] || budget=300
+echo "wait-healthy: ${c} budget ${budget} s (start period ${start} s, interval ${interval} s, retries ${retries})"
+
+status=""
+for _ in $(seq 1 "$budget"); do
+  status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c")"
+  [ "$status" = healthy ] && exit 0
+  sleep 1
+done
+echo "::error::State.Health.Status is '${status}' after ${budget} s, want healthy"
+docker inspect --format '{{json .State.Health}}' "$c" || true
+docker logs "$c" || true
+exit 1

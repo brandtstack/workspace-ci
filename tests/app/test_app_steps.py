@@ -6,6 +6,7 @@ Run: python3 tests/app/test_app_steps.py   (needs PyYAML, bash, base64)
 """
 import base64
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -16,6 +17,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "app.yml")
+WAIT = os.path.join(HERE, "..", "..", "scripts", "wait-healthy")
 with open(WORKFLOW) as f:
     IMAGE_STEPS = {s["name"]: s for s in yaml.safe_load(f)["jobs"]["image"]["steps"] if "name" in s}
 
@@ -29,6 +31,7 @@ esac
 case "$1" in
   inspect)
     case "$*" in
+      *Config.Healthcheck*) cat "$FAKE/hc_dur" 2>/dev/null ;;
       *json*) echo '{"Status":"starting"}' ;;
       *) n=$(cat "$FAKE/polls" 2>/dev/null || echo 0); echo $((n+1)) > "$FAKE/polls"
          sed -n "$((n+1))p;" "$FAKE/health" | grep . || tail -n1 "$FAKE/health" ;;
@@ -64,6 +67,9 @@ def run_step(name, env=None, fake=None):
         with open(sl, "w") as f:
             f.write("#!/bin/sh\nexit 0\n")
         os.chmod(sl, 0o755)
+        ws = os.path.join(tmp, "ws-ci", "scripts")
+        os.makedirs(ws)
+        shutil.copy(WAIT, os.path.join(ws, "wait-healthy"))
         for k, v in (fake or {}).items():
             with open(os.path.join(fk, k), "w") as f:
                 f.write(v)
@@ -178,12 +184,78 @@ class CustomGoHealthcheck(unittest.TestCase):
         self.assertIn("image HEALTHCHECK healthy", p.stdout)
         self.assertFalse([c for c in calls if c.startswith("exec")])
 
+    def test_waits_with_the_budget_of_the_images_own_healthcheck(self):
+        p, _, _, _ = run_step(self.N, fake={"hc_test": '["CMD","/x"]\n', "health": "healthy\n",
+                                            "hc_dur": "10000000000 5000000000 3\n"})
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("budget 55 s", p.stdout)
+
     def test_never_healthy_fails_and_prints_the_health_log(self):
         p, calls, _, _ = run_step(self.N, fake={"hc_test": '["CMD","/x"]\n', "health": "unhealthy\n"})
         self.assertNotEqual(p.returncode, 0)
-        self.assertIn("want healthy", p.stdout)
+        self.assertIn("State.Health.Status is 'unhealthy' after 130 s, want healthy", p.stdout)
         self.assertTrue([c for c in calls if c.startswith("inspect") and "json" in c])
         self.assertTrue([c for c in calls if c.startswith("logs smoke")])
+
+
+class WaitHealthy(unittest.TestCase):
+    """scripts/wait-healthy <container>: the budget comes from the container's own Config.Healthcheck
+    (inspect gives nanoseconds): StartPeriod + Interval * (Retries + 1) + 10 s, Docker's defaults for a zero field
+    (interval 30 s, start period 0, retries 3), clamped to 30..300 s."""
+
+    def wait(self, hc_dur, health="healthy\n"):
+        d = tempfile.mkdtemp()
+        try:
+            bin_, fk = os.path.join(d, "bin"), os.path.join(d, "fake")
+            os.makedirs(bin_)
+            os.makedirs(fk)
+            for name, body in (("docker", FAKE_DOCKER), ("sleep", "#!/bin/sh\nexit 0\n")):
+                with open(os.path.join(bin_, name), "w") as f:
+                    f.write(body)
+                os.chmod(os.path.join(bin_, name), 0o755)
+            for k, v in (("hc_dur", hc_dur), ("health", health)):
+                with open(os.path.join(fk, k), "w") as f:
+                    f.write(v)
+            p = subprocess.run(["bash", WAIT, "smoke"], capture_output=True, text=True,
+                               env={"PATH": bin_ + os.pathsep + os.environ["PATH"], "FAKE": fk, "HOME": d})
+            with open(os.path.join(fk, "polls")) as f:
+                polls = int(f.read()) if os.path.exists(os.path.join(fk, "polls")) else 0
+            return p, polls
+        finally:
+            shutil.rmtree(d)
+
+    def budget(self, hc_dur):
+        p, _ = self.wait(hc_dur)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        m = re.search(r"budget (\d+) s", p.stdout)
+        self.assertTrue(m, p.stdout)
+        return int(m.group(1))
+
+    def test_budget_arithmetic(self):
+        S = 10**9
+        for label, dur, want in (
+            ("no healthcheck output: all defaults (0 + 30 * 4 + 10)", "", 130),
+            ("all zero: defaults", "0 0 0", 130),
+            ("explicit (5 + 10 * 4 + 10)", "%d %d 3" % (10 * S, 5 * S), 55),
+            ("zero interval only: default 30 s (5 + 30 * 3 + 10)", "0 %d 2" % (5 * S), 105),
+            ("zero retries only: default 3 (0 + 10 * 4 + 10)", "%d 0 0" % (10 * S), 50),
+            ("clamped up to 30", "%d 0 1" % (1 * S), 30),
+            ("clamped down to 300", "%d 0 3" % (120 * S), 300),
+            ("just under the ceiling", "%d %d 3" % (60 * S, 40 * S), 290),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self.budget(dur + "\n"), want)
+
+    def test_polls_exactly_the_budget_then_fails_with_the_text_and_dump(self):
+        p, polls = self.wait("%d 0 1\n" % (1 * 10**9), health="starting\n")
+        self.assertEqual(p.returncode, 1)
+        self.assertEqual(polls, 30)
+        self.assertIn("::error::State.Health.Status is 'starting' after 30 s, want healthy", p.stdout)
+        self.assertIn('{"Status":"starting"}', p.stdout)
+
+    def test_returns_as_soon_as_healthy(self):
+        p, polls = self.wait("", health="starting\nstarting\nhealthy\n")
+        self.assertEqual((p.returncode, polls), (0, 3), p.stdout)
 
 
 if __name__ == "__main__":

@@ -207,7 +207,9 @@ class AppShape(unittest.TestCase):
         go = [s for s in steps("image") if "docker exec smoke /app healthcheck" in s.get("run", "")]
         self.assertEqual(len(go), 1)
         self.assertEqual(go[0]["if"], "needs.verify.outputs.family == 'go'")
-        self.assertIn(".State.Health.Status", go[0]["run"])
+        self.assertIn('bash "$RUNNER_TEMP/ws-ci/scripts/wait-healthy" smoke', go[0]["run"])
+        self.assertNotIn(".State.Health.Status", go[0]["run"])  # one copy of the wait: scripts/wait-healthy
+        self.assertLess(go[0]["run"].index("/app healthcheck"), go[0]["run"].index("wait-healthy"))
         names = [s.get("name", "") for s in steps("image")]
         # After the boot step (the container exists), before the teardown.
         self.assertLess(names.index("Boot and smoke test"), names.index(go[0]["name"]))
@@ -273,7 +275,9 @@ class AppShape(unittest.TestCase):
         self.assertNotIn("${{", run)
         self.assertIn("custom go image has no HEALTHCHECK", run)
         self.assertIn("Config.Healthcheck", run)
-        self.assertIn(".State.Health.Status", run)
+        self.assertIn('bash "$RUNNER_TEMP/ws-ci/scripts/wait-healthy" smoke', run)
+        self.assertNotIn(".State.Health.Status", run)
+        self.assertLess(run.index("custom go image has no HEALTHCHECK"), run.index("wait-healthy"))
         self.assertNotIn("docker exec", run)  # a custom binary has its own name: nothing is exec'd
         self.assertLess(names.index("Boot and smoke test"), names.index("Custom go image HEALTHCHECK"))
         self.assertLess(names.index("Custom go image HEALTHCHECK"), names.index("Tear down"))
@@ -281,6 +285,17 @@ class AppShape(unittest.TestCase):
         go = [s for s in steps("image") if "docker exec smoke /app healthcheck" in s.get("run", "")]
         self.assertEqual(len(go), 1)
         self.assertEqual(go[0]["if"], "needs.verify.outputs.family == 'go'")
+
+    def test_wait_healthy_script_is_on_the_runner(self):
+        # Both users run it from the workspace-ci copy the image job moves to $RUNNER_TEMP/ws-ci.
+        ss = steps("image")
+        i = [k for k, x in enumerate(ss) if x.get("with", {}).get("path") == ".ws-ci"][0]
+        self.assertIn('mv "$GITHUB_WORKSPACE/.ws-ci" "$RUNNER_TEMP/ws-ci"', ss[i + 1]["run"])
+        users = [s for s in ss if "wait-healthy" in s.get("run", "")]
+        self.assertEqual(len(users), 2)
+        for u in users:
+            self.assertGreater(ss.index(u), i + 1)
+        self.assertTrue(os.access(os.path.join(HERE, "..", "..", "scripts", "wait-healthy"), os.X_OK))
 
     def test_publish_guard(self):
         pub = [s for s in steps("image") if s.get("uses", "").startswith("docker/login-action@")

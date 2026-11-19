@@ -108,7 +108,7 @@ The app must:
 - Implement `<binary> healthcheck`: GET `http://127.0.0.1:$PORT/healthz` with a 2 s timeout and no redirects
   followed, exit 0 on 200, 1 otherwise. The image `HEALTHCHECK` runs it in exec form (`/app healthcheck`, every 10 s, 3 s timeout,
   5 s start period, 3 retries), and the app.yml smoke requires it to exit 0 and the container to turn
-  `healthy` within 30 s.
+  `healthy` within the budget `scripts/wait-healthy` computes from the image's own HEALTHCHECK (see custom).
 - Keep persistent files under `/data`. Every go image ships it empty and owned by `65532:65532`; a named
   (or anonymous) volume mounted there takes that ownership on first mount. A bind mount keeps the host
   directory's owner, so it must be chowned to `65532` on the host or the app cannot write.
@@ -129,8 +129,10 @@ The image must:
   `wget -qO- http://127.0.0.1:80/healthz` inside the container, and Coolify's check runs the same busybox `wget`.
 - **`go`:** declare an exec-form `HEALTHCHECK` (distroless has no shell, so Coolify's check is off and this is the
   only one). The step "Custom go image HEALTHCHECK" fails with `custom go image has no HEALTHCHECK` when
-  `Config.Healthcheck.Test` is empty, `NONE` or missing, then waits up to 30 s for the smoke container to turn
-  `healthy` and prints the health log if it does not. It execs no binary, since a custom binary has its own name
+  `Config.Healthcheck.Test` is empty, `NONE` or missing, then waits for the smoke container to turn
+  `healthy` and prints the health log if it does not. The wait (`scripts/wait-healthy`, also used by the `go` step)
+  is `StartPeriod + Interval x (Retries + 1) + 10 s` from the container's own HEALTHCHECK, with Docker's defaults for a
+  field left at 0 (interval 30 s, start period 0, retries 3), clamped to 30-300 s and printed in the log. It execs no binary, since a custom binary has its own name
   (the `family: go` step, which execs `/app healthcheck`, is separate and unchanged).
 - Declare `ARG PUBLIC_BUILD_ENV_B64` when the contract has `build-args`, and decode it before the build as in
   [Contract build-args](#contract-build-args).
