@@ -220,6 +220,20 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(m, "fixture matrix not found in tests.yml")
         self.assertEqual(sorted(x.strip() for x in m.group(1).split(",")), names)
 
+    def test_docs_cover_the_smoke_keys_and_the_custom_family(self):
+        with open(os.path.join(ROOT, "README.md")) as f:
+            readme = f.read()
+        with open(os.path.join(ROOT, "dockerfiles", "README.md")) as f:
+            dock = f.read()
+        app_contract = readme.split("## App contract", 1)[1].split("\n## ", 1)[0]
+        for k in ("smoke-env", "smoke-postgres", "smoke-random"):
+            self.assertIn("`%s`" % k, app_contract, "README App contract does not name " + k)
+            self.assertIn("`%s`" % k, dock, "dockerfiles/README.md does not name " + k)
+        self.assertRegex(dock, r"(?m)^## custom\b")
+        for needle in ("postgresql://smoke:smoke@smoke-pg:5432/<name>?sslmode=disable", "--entrypoint", "PUBLIC_BUILD_ENV_B64",
+                       "HEALTHCHECK", "wget"):
+            self.assertIn(needle, dock.split("## custom", 1)[1], needle)
+
     def test_yq_checksum_mismatch(self):
         tc = tempfile.mkdtemp()
         try:
