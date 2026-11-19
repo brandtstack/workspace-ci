@@ -114,6 +114,8 @@ def bools: ["prisma","dotenvx","integration","private-registry","migrate"];
           else ($c["smoke-postgres"] as $l | $l | to_entries[] | . as $e
             | (if (.value | isstr | not) or (.value | test("\\A[a-z][a-z0-9_]{0,30}\\z") | not)
                  then "smoke-postgres: \(.value | tostring): name must match ^[a-z][a-z0-9_]{0,30}$"
+               elif (["postgres","template0","template1"] | index($e.value)) != null
+                 then "smoke-postgres: \($e.value): name is reserved (postgres, template0 and template1 exist already)"
                elif ($l | index($e.value)) != $e.key then "smoke-postgres: \(.value) is listed twice"
                else empty end))
           end)

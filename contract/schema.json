@@ -43,8 +43,8 @@
       "minItems": 1,
       "maxItems": 4,
       "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,30}$" },
-      "description": "Database names. The smoke starts a throwaway docker.io/library/postgres:16.15-alpine beside the container and creates each one; the URL is postgresql://smoke:smoke@smoke-pg:5432/<name>?sslmode=disable. Map it to the app's own env names through smoke-env."
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,30}$", "not": { "enum": ["postgres", "template0", "template1"] } },
+      "description": "Database names (not postgres, template0 or template1, which exist already). The smoke starts a throwaway docker.io/library/postgres:16.15-alpine beside the container and creates each one; the URL is postgresql://smoke:smoke@smoke-pg:5432/<name>?sslmode=disable. Map it to the app's own env names through smoke-env."
     },
     "smoke-random": {
       "type": "object",
