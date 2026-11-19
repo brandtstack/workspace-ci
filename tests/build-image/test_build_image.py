@@ -334,7 +334,9 @@ class BuildImage(unittest.TestCase):
             self.assertNotIn("http://localhost", l)
         with open(SCRIPT) as f:
             src = f.read()
-        self.assertNotIn("docker", src.replace("dockerfile", "").replace("Dockerfile", "").replace("DOCKERFILE", "").lower())
+        # docker.io is the registry host of the fully qualified Postgres image, not the Docker tool.
+        self.assertIn("docker.io/library/postgres:16.15-alpine", src)
+        self.assertNotIn("docker", src.replace("docker.io/library/", "").replace("dockerfile", "").replace("Dockerfile", "").replace("DOCKERFILE", "").lower())
         self.assertNotIn("http://localhost", src)
 
     def test_default_dir_is_cwd_and_symlink_works(self):
