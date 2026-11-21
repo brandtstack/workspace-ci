@@ -318,18 +318,21 @@ jobs:
         if: needs.verify.outputs.go != ''
         run: make verify-integration
 
-  # Builds the production image ONCE and publishes :sha-<head>; release retags that exact image on
-  # merge, so there is deliberately no rebuild on main. Pull requests only.
   # Warn only, PRs only, and nothing needs it: Renovate's osvVulnerabilityAlerts (default.json) covers direct
   # dependencies only, so this keeps the whole-lockfile signal without holding up `image` (which needs only
   # verify) or the push path (release needs the whole `ci` call, and this job is skipped on push). Inside verify,
   # waiting for it cost up to 45 s before `image` could start (tend-api; build-time cuts plan, Task 4 record).
-  # The job never fails: a high/critical advisory or an audit error is a ::warning:: on the PR.
+  # PR-only ON PURPOSE: on push, release needs the whole `ci` call, so an audit job there would bring the wait
+  # back onto the release path. Accepted gap: an advisory published between a PR's last run and its merge shows
+  # on the repo's next PR, not on the merge run (panel review on workspace-ci#32).
+  # The job never goes red: a high/critical advisory or an audit error is a ::warning:: on the PR, and
+  # job-level continue-on-error covers checkout/setup-node failures and the timeout. Never a required check.
   audit:
     if: github.event_name == 'pull_request' && needs.verify.outputs.node != ''
     needs: verify
     runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 10
+    continue-on-error: true
     permissions:
       contents: read
       packages: read
@@ -355,6 +358,8 @@ jobs:
             echo "::warning::npm audit: high or critical advisories in the lockfile, or the audit failed (exit ${rc}; see the log above). Not blocking."
           fi
 
+  # Builds the production image ONCE and publishes :sha-<head>; release retags that exact image on
+  # merge, so there is deliberately no rebuild on main. Pull requests only.
   image:
     if: github.event_name == 'pull_request'
     needs: verify
@@ -421,6 +426,8 @@ jobs:
           # On pull_request, github.sha is the synthetic merge commit, NOT the
           # branch tip. The release workflow looks the image up by head SHA.
           echo "head=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          # The config's `created` is the fixed SOURCE_DATE_EPOCH (see "Build production image"); this is the real one.
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       # The contract's NEXT_PUBLIC_* / VITE_* names are arbitrary, so a shared Dockerfile cannot declare them.
       # They travel as ONE declared ARG, base64 of the K=V lines (public values only, by contract).
@@ -449,7 +456,8 @@ jobs:
           NPM_TOKEN: ${{ needs.verify.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
           # A FIXED epoch, not the commit time: with the commit time every PR moves the clamp and every layer the
           # build writes gets a new digest again (probe: 7 of 16 tilde layers changed with only the epoch moved).
-          # It also becomes the image config's `created` (2026-01-01T00:00:00Z); nothing in the fleet reads that.
+          # It also becomes the image config's `created` (2026-01-01T00:00:00Z); nothing in this repo reads that. The
+          # real build time travels as the org.opencontainers.image.created label (config only, no layer changes).
           SOURCE_DATE_EPOCH: '1767225600'
         with:
           context: ${{ inputs.path }}
@@ -468,6 +476,7 @@ jobs:
           # (ci-runner:0.1.2, Sysbox, 2026-11-21): two cold builds gave the same 16 digests, and the push kept them.
           outputs: type=docker,rewrite-timestamp=true,unpack=false
           tags: ci-image:local
+          labels: org.opencontainers.image.created=${{ steps.meta.outputs.created }}
           # No attestations: on a daemon with the containerd image store (the Acer and ubuntu-latest both are), the
           # docker driver would keep them and `docker push` would publish an index with an unknown/unknown entry.
           # Off, the pushed image stays one amd64 manifest whatever the store, as it was under docker-container.
