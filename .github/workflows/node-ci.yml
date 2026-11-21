@@ -149,6 +149,8 @@ jobs:
           # branch tip. The release workflow looks the image up by head SHA.
           echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
 
+      # Default (docker-container) driver on purpose: only app.yml (the build contract) moved to the docker driver
+      # (2026-11-21, with provenance/sbom off); this workflow's callers keep the build and image shape they had.
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Build production image
