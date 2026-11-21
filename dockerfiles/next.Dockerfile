@@ -14,6 +14,9 @@ RUN got="$(node -p "process.versions.node.split('.')[0]")" \
 RUN apk add --no-cache libc6-compat ca-certificates
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
+# No audit/fund/update check: the audit's advisory lookups cost ~40 s per build. The verify job runs a warn-only
+# `npm audit` of the lockfile instead (app.yml). migrate-true passes --no-audit --no-fund on its own install.
+ENV NPM_CONFIG_AUDIT=false NPM_CONFIG_FUND=false NPM_CONFIG_UPDATE_NOTIFIER=false
 # The private-registry token is a BuildKit secret, never an ARG (build logs render ARGs in clear).
 # A public-deps build has no secret file, so it is optional.
 RUN --mount=type=secret,id=npm_token \

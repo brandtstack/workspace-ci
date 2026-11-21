@@ -55,6 +55,7 @@
       "allowedVersions": "<10"
     }
   ],
+  "osvVulnerabilityAlerts": true,
   "vulnerabilityAlerts": {
     "automerge": true,
     "schedule": ["at any time"]

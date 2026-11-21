@@ -135,6 +135,23 @@ jobs:
         run: npm ci
         env:
           NPM_TOKEN: ${{ steps.contract.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
+          NPM_CONFIG_AUDIT: 'false'
+          NPM_CONFIG_FUND: 'false'
+          NPM_CONFIG_UPDATE_NOTIFIER: 'false'
+      # Every install here and in the shared Dockerfiles runs with audit off: its advisory lookups cost ~40 s each
+      # (S6, 2026-11-21). Renovate's osvVulnerabilityAlerts (default.json) covers direct dependencies only, so this
+      # keeps the whole-lockfile signal: one `npm audit`, WARN ONLY, never failing the job. Started in the background
+      # after npm ci (so it does not slow the install) and overlapping `npm run verify`; "npm audit result" at the end
+      # of the job prints it. The runner reaps the process at job end if it is still going.
+      - name: npm audit (background, warn only)
+        id: npmaudit
+        if: steps.contract.outputs.node != ''
+        continue-on-error: true
+        env:
+          NPM_TOKEN: ${{ steps.contract.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
+        run: |
+          nohup sh -c 'npm audit --package-lock-only --audit-level=high > "$RUNNER_TEMP/npm-audit.txt" 2>&1; echo "$?" > "$RUNNER_TEMP/npm-audit.rc"' >/dev/null 2>&1 &
+          echo "npm audit started in the background; see \"npm audit result\""
       - name: npm run verify
         if: steps.contract.outputs.node != ''
         run: npm run verify
@@ -250,6 +267,26 @@ jobs:
         with:
           path: ${{ steps.contract.outputs.favicon }}
 
+      # Warn only (see "npm audit (background, warn only)"): exit non-zero means a high/critical advisory in the
+      # lockfile or an audit error. Waits at most 60 s for a slow audit, then gives up with a warning.
+      - name: npm audit result
+        if: always() && steps.npmaudit.outcome == 'success'
+        continue-on-error: true
+        run: |
+          rc_file="$RUNNER_TEMP/npm-audit.rc"
+          for _ in $(seq 1 60); do [ -f "$rc_file" ] && break; sleep 1; done
+          if [ ! -f "$rc_file" ]; then
+            echo "::warning::npm audit did not finish within 60 s of the end of verify (not blocking)"
+            exit 0
+          fi
+          rc="$(cat "$rc_file")"
+          echo "::group::npm audit --package-lock-only --audit-level=high (exit ${rc})"
+          cat "$RUNNER_TEMP/npm-audit.txt"
+          echo "::endgroup::"
+          if [ "$rc" != 0 ]; then
+            echo "::warning::npm audit: high or critical advisories in the lockfile, or the audit failed (exit ${rc}; expand the group above). Not blocking."
+          fi
+
   # Skipped (not failed) when the contract says integration: false; a skipped job satisfies a required check.
   integration:
     if: needs.verify.outputs.integration == 'true'
@@ -291,6 +328,9 @@ jobs:
         run: npm ci
         env:
           NPM_TOKEN: ${{ needs.verify.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
+          NPM_CONFIG_AUDIT: 'false'
+          NPM_CONFIG_FUND: 'false'
+          NPM_CONFIG_UPDATE_NOTIFIER: 'false'
       - name: npm run verify:integration
         if: needs.verify.outputs.node != ''
         run: npm run verify:integration
@@ -389,7 +429,16 @@ jobs:
           set -euo pipefail
           echo "b64=$(printf '%s' "$BUILD_ARGS" | base64 -w0)" >> "$GITHUB_OUTPUT"
 
+      # The daemon's own builder: no moby/buildkit pull or boot, and no tarball export/import for `load` (S6 A/B:
+      # ~15-30 s per build). Needs a daemon whose default builder is BuildKit (Docker Engine >= 23) for the named
+      # context, the secret and `--mount=type=bind`; validated on the Acer runner (ci-runner:0.1.2, containerd image
+      # store) in S6 and on ubuntu-latest by this repo's fixtures. An older daemon fails the build loudly. No cache
+      # export (none used). Isolation: the build cache and image store are the job's own dockerd, which the Acer's
+      # per-job Sysbox runner (AutoRemove, only the toolcache volume) discards with the job; a runner whose daemon
+      # outlives a job would let one build's local tags and cache reach the next.
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          driver: docker
 
       - name: Build production image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -406,6 +455,11 @@ jobs:
           build-contexts: ws=${{ runner.temp }}/ws-ci/dockerfiles
           load: true
           tags: ci-image:local
+          # No attestations: on a daemon with the containerd image store (the Acer and ubuntu-latest both are), the
+          # docker driver would keep them and `docker push` would publish an index with an unknown/unknown entry.
+          # Off, the pushed image stays one amd64 manifest whatever the store, as it was under docker-container.
+          provenance: false
+          sbom: false
           # Blank lines are dropped by the action. ARG names are the shared Dockerfiles' (Task 6).
           # PUBLIC_BUILD_ENV_B64 also goes to `custom`: a custom Dockerfile declares and decodes it like next/spa (dockerfiles/README.md).
           build-args: |

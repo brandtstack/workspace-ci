@@ -7,6 +7,9 @@ RUN got="$(node -p "process.versions.node.split('.')[0]")" \
  && if [ "$got" != "$NODE" ]; then echo "contract node: $NODE but this image has Node $got" >&2; exit 1; fi
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
+# No audit/fund/update check: the audit's advisory lookups cost ~40 s per build. The verify job runs a warn-only
+# `npm audit` of the lockfile instead (app.yml).
+ENV NPM_CONFIG_AUDIT=false NPM_CONFIG_FUND=false NPM_CONFIG_UPDATE_NOTIFIER=false
 # BuildKit secret, never an ARG; optional for public-deps builds.
 RUN --mount=type=secret,id=npm_token \
     if [ -f /run/secrets/npm_token ]; then NPM_TOKEN="$(cat /run/secrets/npm_token)"; export NPM_TOKEN; fi; \
