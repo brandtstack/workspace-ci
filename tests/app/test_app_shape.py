@@ -37,7 +37,24 @@ def runs(job):
 
 class AppShape(unittest.TestCase):
     def test_job_ids(self):
-        self.assertEqual(set(JOBS), {"verify", "integration", "image"})
+        self.assertEqual(set(JOBS), {"verify", "integration", "audit", "image"})
+
+    def test_audit_is_its_own_warn_only_job(self):
+        # Waiting for the audit inside verify held up `image` by up to 45 s (build-time cuts plan, Task 4).
+        j = JOBS["audit"]
+        self.assertEqual(j["needs"], "verify")
+        self.assertIn("github.event_name == 'pull_request'", j["if"])
+        self.assertIn("needs.verify.outputs.node", j["if"])
+        self.assertEqual(j["permissions"], {"contents": "read", "packages": "read"})
+        self.assertNotIn("continue-on-error", j)
+        run = [s for s in j["steps"] if s.get("name") == "npm audit (warn only)"][0]["run"]
+        self.assertIn("npm audit --package-lock-only --audit-level=high || rc=$?", run)
+        self.assertIn("::warning::", run)
+        self.assertNotRegex(run, r"(^|\n)\s*exit ")
+        for job in ("verify", "integration", "image"):
+            self.assertNotIn("audit", str(JOBS[job].get("needs", "")))
+            for s in steps(job):
+                self.assertNotIn("npm audit", s.get("run", ""), job)
 
     def test_inputs_are_runner_and_path_only(self):
         inputs = ON["workflow_call"]["inputs"]
@@ -124,6 +141,12 @@ class AppShape(unittest.TestCase):
         self.assertEqual(w["build-contexts"], "ws=${{ runner.temp }}/ws-ci/dockerfiles")
         self.assertIn("runtime-dotenvx", w["target"])
         self.assertIn("runtime-plain", w["target"])
+        # Reproducible layers: a fixed epoch (never the commit time) and no unpack (the docker driver refuses
+        # rewrite-timestamp with unpack). `load` would set a second, unpacked output.
+        self.assertEqual(w["outputs"], "type=docker,rewrite-timestamp=true,unpack=false")
+        self.assertNotIn("load", w)
+        self.assertEqual(w["tags"], "ci-image:local")
+        self.assertEqual(b[0]["env"]["SOURCE_DATE_EPOCH"], "1767225600")
 
     def test_no_secret_as_build_arg(self):
         self.assertNotRegex(TEXT, r"(?i)build-args:.*(token|secret)")
@@ -323,7 +346,7 @@ class AppShape(unittest.TestCase):
         self.assertIn("@127.0.0.1:5432/", env)
 
     def test_working_directory_is_path(self):
-        for job in ("verify", "integration"):
+        for job in ("verify", "integration", "audit"):
             self.assertEqual(JOBS[job]["defaults"]["run"]["working-directory"], "${{ inputs.path }}")
 
     def test_ref_check_after_checkout_in_both_jobs(self):
