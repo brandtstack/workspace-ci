@@ -138,20 +138,8 @@ jobs:
           NPM_CONFIG_AUDIT: 'false'
           NPM_CONFIG_FUND: 'false'
           NPM_CONFIG_UPDATE_NOTIFIER: 'false'
-      # Every install here and in the shared Dockerfiles runs with audit off: its advisory lookups cost ~40 s each
-      # (S6, 2026-11-21). Renovate's osvVulnerabilityAlerts (default.json) covers direct dependencies only, so this
-      # keeps the whole-lockfile signal: one `npm audit`, WARN ONLY, never failing the job. Started in the background
-      # after npm ci (so it does not slow the install) and overlapping `npm run verify`; "npm audit result" at the end
-      # of the job prints it. The runner reaps the process at job end if it is still going.
-      - name: npm audit (background, warn only)
-        id: npmaudit
-        if: steps.contract.outputs.node != ''
-        continue-on-error: true
-        env:
-          NPM_TOKEN: ${{ steps.contract.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
-        run: |
-          nohup sh -c 'npm audit --package-lock-only --audit-level=high > "$RUNNER_TEMP/npm-audit.txt" 2>&1; echo "$?" > "$RUNNER_TEMP/npm-audit.rc"' >/dev/null 2>&1 &
-          echo "npm audit started in the background; see \"npm audit result\""
+      # Audit is off in every install (here and in the shared Dockerfiles): its advisory lookups cost ~40 s each
+      # (S6, 2026-11-21). The whole-lockfile `npm audit` runs as the separate warn-only `audit` job below.
       - name: npm run verify
         if: steps.contract.outputs.node != ''
         run: npm run verify
@@ -267,26 +255,6 @@ jobs:
         with:
           path: ${{ steps.contract.outputs.favicon }}
 
-      # Warn only (see "npm audit (background, warn only)"): exit non-zero means a high/critical advisory in the
-      # lockfile or an audit error. Waits at most 60 s for a slow audit, then gives up with a warning.
-      - name: npm audit result
-        if: always() && steps.npmaudit.outcome == 'success'
-        continue-on-error: true
-        run: |
-          rc_file="$RUNNER_TEMP/npm-audit.rc"
-          for _ in $(seq 1 60); do [ -f "$rc_file" ] && break; sleep 1; done
-          if [ ! -f "$rc_file" ]; then
-            echo "::warning::npm audit did not finish within 60 s of the end of verify (not blocking)"
-            exit 0
-          fi
-          rc="$(cat "$rc_file")"
-          echo "::group::npm audit --package-lock-only --audit-level=high (exit ${rc})"
-          cat "$RUNNER_TEMP/npm-audit.txt"
-          echo "::endgroup::"
-          if [ "$rc" != 0 ]; then
-            echo "::warning::npm audit: high or critical advisories in the lockfile, or the audit failed (exit ${rc}; expand the group above). Not blocking."
-          fi
-
   # Skipped (not failed) when the contract says integration: false; a skipped job satisfies a required check.
   integration:
     if: needs.verify.outputs.integration == 'true'
@@ -349,6 +317,46 @@ jobs:
       - name: make verify-integration
         if: needs.verify.outputs.go != ''
         run: make verify-integration
+
+  # Warn only, PRs only, and nothing needs it: Renovate's osvVulnerabilityAlerts (default.json) covers direct
+  # dependencies only, so this keeps the whole-lockfile signal without holding up `image` (which needs only
+  # verify) or the push path (release needs the whole `ci` call, and this job is skipped on push). Inside verify,
+  # waiting for it cost up to 45 s before `image` could start (tend-api; build-time cuts plan, Task 4 record).
+  # PR-only ON PURPOSE: on push, release needs the whole `ci` call, so an audit job there would bring the wait
+  # back onto the release path. Accepted gap: an advisory published between a PR's last run and its merge shows
+  # on the repo's next PR, not on the merge run (panel review on workspace-ci#32).
+  # The job never goes red: a high/critical advisory or an audit error is a ::warning:: on the PR, and
+  # job-level continue-on-error covers checkout/setup-node failures and the timeout. Never a required check.
+  audit:
+    if: github.event_name == 'pull_request' && needs.verify.outputs.node != ''
+    needs: verify
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No npm cache: --package-lock-only installs nothing.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ needs.verify.outputs.node }}
+      - name: npm audit (warn only)
+        env:
+          NPM_TOKEN: ${{ needs.verify.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
+          NPM_CONFIG_UPDATE_NOTIFIER: 'false'
+        run: |
+          rc=0
+          npm audit --package-lock-only --audit-level=high || rc=$?
+          if [ "$rc" != 0 ]; then
+            echo "::warning::npm audit: high or critical advisories in the lockfile, or the audit failed (exit ${rc}; see the log above). Not blocking."
+          fi
 
   # Builds the production image ONCE and publishes :sha-<head>; release retags that exact image on
   # merge, so there is deliberately no rebuild on main. Pull requests only.
@@ -418,6 +426,8 @@ jobs:
           # On pull_request, github.sha is the synthetic merge commit, NOT the
           # branch tip. The release workflow looks the image up by head SHA.
           echo "head=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          # The config's `created` is the fixed SOURCE_DATE_EPOCH (see "Build production image"); this is the real one.
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       # The contract's NEXT_PUBLIC_* / VITE_* names are arbitrary, so a shared Dockerfile cannot declare them.
       # They travel as ONE declared ARG, base64 of the K=V lines (public values only, by contract).
@@ -444,6 +454,11 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         env:
           NPM_TOKEN: ${{ needs.verify.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
+          # A FIXED epoch, not the commit time: with the commit time every PR moves the clamp and every layer the
+          # build writes gets a new digest again (probe: 7 of 16 tilde layers changed with only the epoch moved).
+          # It also becomes the image config's `created` (2026-01-01T00:00:00Z); nothing in this repo reads that. The
+          # real build time travels as the org.opencontainers.image.created label (config only, no layer changes).
+          SOURCE_DATE_EPOCH: '1767225600'
         with:
           context: ${{ inputs.path }}
           # Computed here, not taken from verify's `dockerfile` output (an absolute path on verify's runner).
@@ -453,8 +468,15 @@ jobs:
           # Named context `ws`: the shared Dockerfiles COPY their helper files (nginx/, next/) from workspace-ci
           # with `COPY --from=ws`, because the build context is the app repo.
           build-contexts: ws=${{ runner.temp }}/ws-ci/dockerfiles
-          load: true
+          # Reproducible layers (build-time cuts plan, Task 5): every file mtime the build writes is clamped to
+          # SOURCE_DATE_EPOCH below, so a layer whose content did not change gets the same digest on every build and
+          # `docker push` answers "Layer already exists" instead of re-uploading it over the 3.1 MB/s home uplink.
+          # The docker driver refuses rewrite-timestamp together with unpack ("conflicts with unpack"), so the image
+          # goes into the store unpacked=false; `docker run` (smoke) unpacks it on first use. Probed on the Acer
+          # (ci-runner:0.1.2, Sysbox, 2026-11-21): two cold builds gave the same 16 digests, and the push kept them.
+          outputs: type=docker,rewrite-timestamp=true,unpack=false
           tags: ci-image:local
+          labels: org.opencontainers.image.created=${{ steps.meta.outputs.created }}
           # No attestations: on a daemon with the containerd image store (the Acer and ubuntu-latest both are), the
           # docker driver would keep them and `docker push` would publish an index with an unknown/unknown entry.
           # Off, the pushed image stays one amd64 manifest whatever the store, as it was under docker-container.
