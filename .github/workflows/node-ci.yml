@@ -65,6 +65,9 @@ jobs:
       - run: npm ci
         env:
           NPM_TOKEN: ${{ inputs.private-registry && secrets.GITHUB_TOKEN || '' }}
+          NPM_CONFIG_AUDIT: 'false'
+          NPM_CONFIG_FUND: 'false'
+          NPM_CONFIG_UPDATE_NOTIFIER: 'false'
       - run: npm run verify
       # `uses:` steps ignore defaults.run.working-directory, so favicon paths are root-relative.
       # PLAYWRIGHT_BROWSERS_PATH is the shared toolcache volume: Chromium downloads once per Acer.
@@ -114,6 +117,9 @@ jobs:
       - run: npm ci
         env:
           NPM_TOKEN: ${{ inputs.private-registry && secrets.GITHUB_TOKEN || '' }}
+          NPM_CONFIG_AUDIT: 'false'
+          NPM_CONFIG_FUND: 'false'
+          NPM_CONFIG_UPDATE_NOTIFIER: 'false'
       - run: npm run verify:integration
 
   # Builds the production image ONCE. The smoke steps are conditional, but the
