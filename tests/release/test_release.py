@@ -527,6 +527,23 @@ def rows(port):
     body = r["rel"].get(VER, {}).get("body", "")
     add("multi-doc: an app record never marks the version live or Latest",
         r["rc"] != 0 and "✅" not in body and "unknown" in body and not [c for c in edits(r) if "--latest" in c], r["out"] + body)
+    for label, raw in (("trailing garbage", b'{"docker_registry_image_tag":"v9.9.9"} garbage'),
+                       ("truncated JSON", b'{"docker_registry_image_tag":"v9'),
+                       ("an HTML page", b"<html>edge error</html>"), ("an empty body", b""),
+                       ("a false tag", b'{"docker_registry_image_tag":false}'),
+                       ("a numeric tag", b'{"docker_registry_image_tag":9}'),
+                       ("an empty tag", b'{"docker_registry_image_tag":""}')):
+        r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+                script={"app_raw": raw})
+        body = r["rel"].get(VER, {}).get("body", "")
+        add("malformed-app: %s on a 200 never marks the version live or Latest" % label,
+            r["rc"] != 0 and "✅" not in body and "unknown" in body and not [c for c in edits(r) if "--latest" in c],
+            r["out"] + body)
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"app_raw": b'{"uuid":"app-1"}'})
+    add("malformed-app: a record with no tag field still warns and marks live",
+        r["rc"] == 0 and "could not read the app's image tag" in r["out"] and "✅" in r["rel"][VER]["body"], r["out"])
+
     r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
             script={"app_tag": "\u0007"})
     body = r["rel"].get(VER, {}).get("body", "")

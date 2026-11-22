@@ -336,6 +336,38 @@ class ContractTests(unittest.TestCase):
             there = re.search(r"^\s*JQ_SAFE: '(.*)'$", f.read(), re.M).group(1)
         self.assertEqual(here, there)
 
+    def test_keys_equal_as_final_text_are_duplicates(self):
+        # A plain TRUE is a boolean to yq and a quoted "TRUE" a string, but both become the JSON key TRUE.
+        d = tempfile.mkdtemp()
+        try:
+            f = os.path.join(d, "build.yml")
+            for word in ("TRUE", "FALSE", "NULL"):
+                for a, b in ((word, '"%s"' % word), ('"%s"' % word, word)):
+                    with self.subTest(first=a, second=b):
+                        with open(f, "w") as fh:
+                            fh.write('family: custom\ndockerfile: Dockerfile\ngo: "1.27"\n'
+                                     'smoke-env:\n  %s: first\n  %s: second\n' % (a, b))
+                        p, written = run(f, self.cache)
+                        self.assertEqual(p.returncode, 1, p.stderr)
+                        self.assertEqual(written, "")
+                        self.assertIn("smoke-env.%s: duplicate key" % word, p.stderr)
+        finally:
+            shutil.rmtree(d)
+
+    def test_a_non_scalar_key_is_refused_cleanly(self):
+        d = tempfile.mkdtemp()
+        try:
+            f = os.path.join(d, "build.yml")
+            with open(f, "w") as fh:
+                fh.write('family: spa\nnode: "24"\n? {a: 1}\n: v\n')
+            p, written = run(f, self.cache)
+            self.assertEqual(p.returncode, 1, p.stderr)
+            self.assertEqual(written, "")
+            for line in p.stderr.strip().split("\n"):
+                self.assertTrue(line.startswith("::error::build.yml: "), line)
+        finally:
+            shutil.rmtree(d)
+
     def test_a_long_key_is_capped_in_the_error_line(self):
         d = tempfile.mkdtemp()
         try:

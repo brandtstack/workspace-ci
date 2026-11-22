@@ -617,13 +617,15 @@ jobs:
           tag_state=none
           shown=""
           if [ "$(get "/applications/${UUID}")" = "200" ]; then
-            tag_state=$(jq -rs --arg v "$VER" 'if length == 0 then "none"
-              elif length > 1 or (.[0] | type) != "object" then "malformed"
-              else (.[0].docker_registry_image_tag // "") as $t
-                | if $t == "" then "none" elif $t == $v then "same" else "moved" end end' "$R" 2>/dev/null || echo none)
+            # A 200 must be one JSON object whose tag is absent or a non-empty string; anything else is malformed.
+            tag_state=$(jq -rs --arg v "$VER" 'if length != 1 or (.[0] | type) != "object" then "malformed"
+              else .[0].docker_registry_image_tag as $t
+                | if $t == null then "none"
+                  elif ($t | type) != "string" or $t == "" then "malformed"
+                  elif $t == $v then "same" else "moved" end end' "$R" 2>/dev/null || echo malformed)
             shown=$(jq -rs "$JQ_SAFE$JQ_DOC"'doc | (.docker_registry_image_tag // empty) | safe' "$R" 2>/dev/null || true)
           fi
-          # Only same, or an unreadable record after a finished deploy, may reach the live branch below.
+          # Only same, or a failed read or absent tag after a finished deploy, may reach the live branch below.
           case "$tag_state" in
             same|moved|none) ;;
             *)
@@ -635,7 +637,7 @@ jobs:
             set_state "⏸ superseded by ${shown:-a newer version}"
             echo "deployment ${DEP} ended '${status}'; the app has moved on to ${shown:-a newer version}"
           elif [ "$status" = "finished" ]; then
-            # An unreadable app record after a finished deploy is still a finished deploy.
+            # A failed read or absent tag after a finished deploy is still a finished deploy.
             [ "$tag_state" != "none" ] || echo "::warning::could not read the app's image tag; marking ${VER} live"
             set_state "✅ live in production $(date -u +%Y-%m-%dT%H:%M:%SZ)" --latest
           else

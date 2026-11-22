@@ -87,8 +87,9 @@ case "$SPECIAL" in
 esac
 
 # yq keeps both entries of a repeated key and jq would take the last, so a later line could silently override an
-# earlier one. Every map is checked, selected by node kind so a custom tag cannot skip it.
-DUPES="$("$YQ" -o=json -I=0 '.. | select(kind == "map") | {"path": (path | join(".")), "keys": keys}' "$FILE" 2>/dev/null \
+# earlier one. Every map is checked, selected by node kind so a custom tag cannot skip it. Keys are compared as text,
+# which is what they become in the JSON: a plain TRUE (a boolean to yq) and a quoted "TRUE" are the same key there.
+DUPES="$("$YQ" -o=json -I=0 '.. | select(kind == "map") | {"path": (path | join(".")), "keys": (keys | map(to_string))}' "$FILE" 2>/dev/null \
   | jq -rs "$JQ_SAFE"'
   .[] | .path as $p | .keys | group_by(.) | map(select(length > 1) | .[0] | tostring) | .[]
   | if $p == "" then "::error::build.yml: \(safe): duplicate top-level key (only one is allowed)"
