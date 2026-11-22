@@ -7,8 +7,9 @@ usage() {
 Usage: build-image [--no-verify] [--no-smoke] [<repo dir>]
 
 Reads <repo dir>/.github/build.yml (default dir: .), runs `npm run verify` (node) or `make verify` (go)
-in the repo, builds localhost/<repo>:dev with podman exactly as app.yml's image job does, boots it
-and polls http://127.0.0.1:8080/healthz for 60 s. The container is always removed afterwards.
+in the repo, builds localhost/<repo>:dev with podman as app.yml's image job does (a next migrate build
+also disables SELinux labels, for the podman VM), boots it and polls http://127.0.0.1:8080/healthz
+for 60 s. The container is always removed afterwards.
 
   --no-verify   skip the verify step
   --no-smoke    build only; do not boot the image
@@ -89,11 +90,12 @@ fi
 
 # --- build -----------------------------------------------------------------------------------------------
 if [ "$FAMILY" = custom ]; then FILE="$DIR/$C_dockerfile"; else FILE="$ROOT/dockerfiles/$FAMILY.Dockerfile"; fi
-# label=disable: the podman machine VM enforces SELinux, which denies the next migrate stage's RUN bind mount of
-# prisma/. Local only: this script is not used by CI, and the flag changes no build instruction or layer content.
-ARGS=(build --security-opt label=disable -f "$FILE" --build-context "ws=$ROOT/dockerfiles" -t "$TAG")
+ARGS=(build -f "$FILE" --build-context "ws=$ROOT/dockerfiles" -t "$TAG")
 if [ "$FAMILY" = next ]; then
   if [ "$C_dotenvx" = true ]; then ARGS+=(--target runtime-dotenvx); else ARGS+=(--target runtime-plain); fi
+  # The podman machine VM enforces SELinux, which denies the migrate stage's RUN bind mount of prisma/. Only that
+  # build gets the exception. Local only: CI does not use this script, and the flag changes no build instruction.
+  if [ "$C_migrate" = true ]; then ARGS+=(--security-opt label=disable); fi
 fi
 case "$FAMILY" in
   next|spa|custom)

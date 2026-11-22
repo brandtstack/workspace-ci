@@ -188,15 +188,19 @@ class BuildImage(unittest.TestCase):
 
     def test_build_disables_selinux_labels_for_the_bind_mount(self):
         # The podman machine VM enforces SELinux, which denies the migrate stage's RUN bind mount of prisma/.
-        for case in ("ok-next-full", "ok-spa-min", "ok-go-subdir", "ok-custom"):
+        d = self.repo("ok-next-full", name="label-migrate")
+        self.run_bi("--no-verify", d, env={"NPM_TOKEN": "x"})
+        self.assertIn("--security-opt label=disable", self.argv(self.calls("podman", "build")[0]))
+        for run in self.calls("podman", "run"):
+            self.assertNotIn("label=disable", self.argv(run), "only the build needs it")
+
+    def test_builds_without_the_bind_mount_keep_selinux_labels(self):
+        for case in ("ok-spa-min", "ok-go-subdir", "ok-custom", "ok-multiline"):
             with self.subTest(case=case):
                 open(self.log, "w").close()
-                d = self.repo(case, name="label-" + case)
+                d = self.repo(case, name="nolabel-" + case)
                 self.run_bi("--no-verify", d, env={"NPM_TOKEN": "x"})
-                build = self.argv(self.calls("podman", "build")[0])
-                self.assertIn("--security-opt label=disable", build)
-                for run in self.calls("podman", "run"):
-                    self.assertNotIn("label=disable", self.argv(run), "only the build needs it")
+                self.assertNotIn("label=disable", self.argv(self.calls("podman", "build")[0]))
 
     def test_the_shared_dockerfile_keeps_the_bind_mount(self):
         # The fix is local only: CI's image layers for every migrate app must not change.
