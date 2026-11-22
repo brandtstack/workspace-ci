@@ -1,0 +1,7 @@
+# expect: smoke-env.TRUE: duplicate key
+family: custom
+dockerfile: Dockerfile
+go: "1.27"
+smoke-env:
+  TRUE: first
+  "TRUE": second

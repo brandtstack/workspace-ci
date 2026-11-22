@@ -1,0 +1,4 @@
+# expect: <file>: YAML anchors, aliases and merge keys are not allowed
+family: spa
+node: "24"
+<<: {smoke-args: --privileged}

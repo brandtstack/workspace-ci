@@ -65,6 +65,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
             seq = s.get("deployments", [(200, "finished")])
             code, status = seq[min(Stub.polls, len(seq) - 1)]
             Stub.polls += 1
+            if isinstance(status, bytes):
+                return self.raw(code, status)
             if status == "<raw>":
                 data = b"<html>not json</html>"
                 self.send_response(code); self.send_header("content-length", str(len(data))); self.end_headers()
@@ -72,7 +74,10 @@ class Stub(http.server.BaseHTTPRequestHandler):
             return self.reply(code, {"status": status, "deployment_uuid": "dep-1",
                                      "application": {"envs": [{"key": "X", "value": FX["PLANTED"]}]}})
         if self.path.startswith("/api/v1/applications/"):
-            return self.reply(s.get("app_code", 200), dict(Stub.app, docker_registry_image_tag=s.get("app_tag", VER), planted=FX["PLANTED"]))
+            if "app_raw" in s:
+                return self.raw(200, s["app_raw"])
+            return self.reply(s.get("app_code", 200), dict(Stub.app, docker_registry_image_tag=s.get("app_tag", VER),
+                                                           planted=FX["PLANTED"], **s.get("app_override", {})))
         if self.path.startswith("/api/v1/deploy"):
             if "deploy_code" in s:
                 return self.raw(s["deploy_code"], s["fail_body"])
@@ -148,6 +153,7 @@ def run(port, name, *, env=None, releases=None, fail=None, fail_once=None, scrip
              "GH_TOKEN": FX["GH_TOKEN"], "VER": VER, "WAIT": "true", "UUID": "app-1", "DEP": "dep-1",
              "BEARER": FX["BEARER"], "CFID": FX["CFID"], "CFSEC": FX["CFSEC"],
              "POLL_INTERVAL": "0", "POLL_TIMEOUT": "5", "RETRY_SLEEP": "0"}
+        e.update(yaml.safe_load(open(WORKFLOW))["jobs"]["release"].get("env", {}))   # as the runner would
         e.update(env or {})
         e = {k: v for k, v in e.items() if v is not None}
         path = os.path.join(base, "step.sh")
@@ -463,6 +469,9 @@ def rows(port):
         r = run(port, name, script={key: 422, "fail_body": json.dumps({"message": "first\n::warning::injected"}).encode()})
         add("no-raw-body: %s keeps a multi-line message on one log line" % call,
             r["rc"] != 0 and "\n::warning::" not in r["out"], r["out"])
+        r = run(port, name, script={key: 422, "fail_body": json.dumps({"message": "first%0A::warning::x%0Dy"}).encode()})
+        add("no-raw-body: %s escapes percent-encoded line breaks" % call,
+            r["rc"] != 0 and "%0A" not in r["out"] and "%0D" not in r["out"] and "first%250A" in r["out"], r["out"])
         for label, text in (("mid-line", "x ##[stop-commands]tok"), ("split by a newline", "x #\n#[add-mask]tok"),
                             ("after a hash", "x ###[add-mask]tok")):
             r = run(port, name, script={key: 422, "fail_body": json.dumps({"message": text}).encode()})
@@ -472,6 +481,91 @@ def rows(port):
         add("message-cap: %s caps a message at 300 characters without splitting one" % call,
             r["rc"] != 0 and "é" * 300 in r["out"] and "é" * 301 not in r["out"] and "�" not in r["out"], r["out"][:200])
         add("timeout: %s sets a curl --max-time" % call, "--max-time 30" in step(name, port))
+
+    # Every other Coolify-supplied value that reaches a log line, a Release or GITHUB_OUTPUT.
+    hostile = "v ##[add-mask]tok %0A::warning::x\n::notice::y"
+    clean = lambda out: "##[" not in out and "%0A" not in out and "\n::warning::" not in out and "\n::notice::" not in out
+    r = run(port, "Sync Coolify from build.yml", env={"FAMILY": "go", "TOOLCHAIN": "go"},
+            script={"app_override": {"ports_exposes": hostile}})
+    add("safe-log: a hostile read-back value is sanitised", r["rc"] != 0 and "ports_exposes" in r["out"] and clean(r["out"]), r["out"])
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"deployments": [(200, hostile), (200, "finished")]})
+    add("safe-log: a hostile polled status is sanitised", r["rc"] == 0 and clean(r["out"]), r["out"])
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"app_tag": hostile})
+    body = r["rel"].get(VER, {}).get("body", "")
+    add("safe-log: a hostile image tag is sanitised in the log and the Release",
+        r["rc"] == 0 and clean(r["out"]) and clean(body) and "superseded" in body, r["out"] + body)
+    for label, tag in (("a control character", VER + "\u0007"), ("a trailing newline", VER + "\n"),
+                       ("a C1 control", VER + "\u0085"), ("a 300-character prefix", VER + "x" * 400)):
+        r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+                script={"app_tag": tag})
+        body = r["rel"].get(VER, {}).get("body", "")
+        add("live-check: a tag differing from the version by %s is not marked live" % label,
+            r["rc"] == 0 and "superseded" in body and "✅" not in body and not [c for c in edits(r) if "--latest" in c],
+            r["out"] + body)
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER)
+    add("live-check: the exact version is still marked live", r["rc"] == 0 and "✅" in r["rel"][VER]["body"], r["out"])
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"app_code": 500})
+    add("live-check: an unreadable app after a finished deploy still warns and marks live",
+        r["rc"] == 0 and "could not read the app's image tag" in r["out"] and "✅" in r["rel"][VER]["body"], r["out"])
+
+    # A body holding several JSON documents must not print one line per document or decide the release state.
+    for call, (name, key) in calls.items():
+        r = run(port, name, script={key: 422, "fail_body": b'{"message":"a"}{"message":"::add-mask::tok"}'})
+        add("multi-doc: %s prints no line per document" % call,
+            r["rc"] != 0 and "422" in r["out"] and "\n::add-mask::" not in r["out"], r["out"])
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"deployments": [(200, b'{"status":"running"}{"status":"::warning::injected"}'), (200, "finished")]})
+    add("multi-doc: a polled status prints no line per document", r["rc"] == 0 and "\n::warning::" not in r["out"], r["out"])
+    r = run(port, "Sync Coolify from build.yml", env={"FAMILY": "go", "TOOLCHAIN": "go"},
+            script={"app_raw": b'{"ports_exposes":"80","health_check_enabled":false}{"ports_exposes":"::warning::x"}'})
+    add("multi-doc: a settings read-back is refused", r["rc"] != 0 and "\n::warning::" not in r["out"], r["out"])
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"app_raw": b'{"docker_registry_image_tag":"v9.9.9"}{"docker_registry_image_tag":"v9.9.9"}'})
+    body = r["rel"].get(VER, {}).get("body", "")
+    add("multi-doc: an app record never marks the version live or Latest",
+        r["rc"] != 0 and "✅" not in body and "unknown" in body and not [c for c in edits(r) if "--latest" in c], r["out"] + body)
+    for label, raw in (("trailing garbage", b'{"docker_registry_image_tag":"v9.9.9"} garbage'),
+                       ("truncated JSON", b'{"docker_registry_image_tag":"v9'),
+                       ("an HTML page", b"<html>edge error</html>"), ("an empty body", b""),
+                       ("a false tag", b'{"docker_registry_image_tag":false}'),
+                       ("a numeric tag", b'{"docker_registry_image_tag":9}'),
+                       ("an empty tag", b'{"docker_registry_image_tag":""}')):
+        r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+                script={"app_raw": raw})
+        body = r["rel"].get(VER, {}).get("body", "")
+        add("malformed-app: %s on a 200 never marks the version live or Latest" % label,
+            r["rc"] != 0 and "✅" not in body and "unknown" in body and not [c for c in edits(r) if "--latest" in c],
+            r["out"] + body)
+    for st in ("failed", "error", "cancelled-by-user"):
+        r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+                script={"deployments": [(200, st)], "app_raw": b"<html>edge error</html>"})
+        body = r["rel"].get(VER, {}).get("body", "")
+        add("malformed-app: a %s deploy still reports the failure" % st,
+            r["rc"] != 0 and ("deploy failed (%s)" % st) in body and "unknown" not in body, r["out"] + body)
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            env={"POLL_TIMEOUT": "1"}, script={"deployments": [(200, "finished\n")]})
+    body = r["rel"].get(VER, {}).get("body", "")
+    add("exact-status: a status differing from finished by a newline is not terminal",
+        r["rc"] != 0 and "✅" not in body and "unknown" in body, r["out"] + body)
+
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"app_raw": b'{"uuid":"app-1"}'})
+    add("malformed-app: a record with no tag field still warns and marks live",
+        r["rc"] == 0 and "could not read the app's image tag" in r["out"] and "✅" in r["rel"][VER]["body"], r["out"])
+
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"app_tag": "\u0007"})
+    body = r["rel"].get(VER, {}).get("body", "")
+    add("superseded: a tag with nothing printable still names a newer version",
+        r["rc"] == 0 and "superseded by a newer version" in body and "✅" not in body, r["out"] + body)
+
+    for bad in ("dep-1\nevil=1", "../x", "", "dep 1"):
+        r = run(port, "Deploy", script={"deploy": {"deployments": [{"message": "q", "deployment_uuid": bad}]}})
+        add("safe-output: deployment_uuid %r is refused" % bad,
+            r["rc"] != 0 and "evil=1" not in r["output"] and "deployment_uuid=" not in r["output"], r["out"] + r["output"])
 
     r = run(port, "Deploy", script={"deploy": {"deployments": [
         {"message": "x ##[stop-commands]tok", "deployment_uuid": "dep-1"}]}})

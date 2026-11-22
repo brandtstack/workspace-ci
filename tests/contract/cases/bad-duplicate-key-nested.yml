@@ -1,0 +1,6 @@
+# expect: build-args.NEXT_PUBLIC_A: duplicate key
+family: next
+node: "24"
+build-args:
+  NEXT_PUBLIC_A: first
+  NEXT_PUBLIC_A: second

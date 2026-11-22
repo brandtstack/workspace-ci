@@ -254,6 +254,151 @@ class ContractTests(unittest.TestCase):
         finally:
             shutil.rmtree(tc)
 
+    def test_yq_swapped_in_the_cache_after_the_check_is_not_executed(self):
+        # A sha256sum shim replaces the shared cached file right after hashing: the check-then-exec window.
+        run(os.path.join(CASES, "ok-spa-min.yml"), self.cache)
+        tc = tempfile.mkdtemp()
+        try:
+            yd = os.path.join(tc, "cache", "yq", YQ_VERSION)
+            os.makedirs(yd)
+            cached = os.path.join(yd, "yq")
+            shutil.copy(os.path.join(self.cache, "yq", YQ_VERSION, "yq"), cached)
+            bindir, temp = os.path.join(tc, "bin"), os.path.join(tc, "runner-temp")
+            os.makedirs(bindir)
+            os.makedirs(temp)
+            marker = os.path.join(tc, "ran")
+            shim = os.path.join(bindir, "sha256sum")
+            with open(shim, "w") as f:
+                f.write("#!/bin/sh\n"
+                        "python3 -c 'import hashlib,sys; p=sys.argv[1]; "
+                        "print(hashlib.sha256(open(p,\"rb\").read()).hexdigest() + \"  \" + p)' \"$1\"\n"
+                        "rm -f '%s'\nprintf '#!/bin/sh\\ntouch %s\\n' > '%s'\nchmod +x '%s'\n"
+                        % (cached, marker, cached, cached))
+            os.chmod(shim, 0o755)
+            p, written = run(os.path.join(CASES, "ok-spa-min.yml"), os.path.join(tc, "cache"),
+                             {"PATH": bindir + os.pathsep + os.environ["PATH"], "RUNNER_TEMP": temp})
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertFalse(os.path.exists(marker), "the swapped cache file was executed")
+            self.assertEqual(parse_output(written), EXPECTED["ok-spa-min"])
+            self.assertEqual(os.listdir(temp), [], "the private yq copy must be removed")
+        finally:
+            shutil.rmtree(tc)
+
+    def test_yq_mismatch_leaves_no_copy_in_runner_temp(self):
+        tc = tempfile.mkdtemp()
+        try:
+            yd, temp = os.path.join(tc, "yq", YQ_VERSION), os.path.join(tc, "runner-temp")
+            os.makedirs(yd)
+            os.makedirs(temp)
+            with open(os.path.join(yd, "yq"), "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            p, _ = run(os.path.join(CASES, "ok-spa-min.yml"), tc, {"RUNNER_TEMP": temp})
+            self.assertEqual(p.returncode, 1)
+            self.assertEqual(os.listdir(temp), [])
+        finally:
+            shutil.rmtree(tc)
+
+    def test_duplicate_key_error_stays_on_one_line(self):
+        d = tempfile.mkdtemp()
+        try:
+            f = os.path.join(d, "build.yml")
+            with open(f, "w") as fh:
+                fh.write('family: spa\nnode: "24"\n"a\\n::warning::x": 1\n"a\\n::warning::x": 2\n')
+            p, written = run(f, self.cache)
+            self.assertEqual(p.returncode, 1, p.stderr)
+            self.assertEqual(written, "")
+            self.assertNotIn("\n::warning::", p.stderr)
+            self.assertIn("duplicate top-level key", p.stderr)
+        finally:
+            shutil.rmtree(d)
+
+    def test_error_lines_escape_percent_encoded_line_breaks(self):
+        # The runner decodes %0A and %0D in ::error:: messages, so a key name must not carry them through.
+        d = tempfile.mkdtemp()
+        try:
+            for name, body in (("dup.yml", 'family: spa\nnode: "24"\n"a%0A::warning::x": 1\n"a%0A::warning::x": 2\n'),
+                               ("unknown.yml", 'family: spa\nnode: "24"\n"a%0D%0Ab": 1\n')):
+                f = os.path.join(d, name)
+                with open(f, "w") as fh:
+                    fh.write(body)
+                p, written = run(f, self.cache)
+                self.assertEqual(p.returncode, 1, p.stderr)
+                self.assertEqual(written, "")
+                self.assertNotRegex(p.stderr, r"%0[AD]", name)
+                self.assertIn("%25", p.stderr, name)
+        finally:
+            shutil.rmtree(d)
+
+    def test_the_two_log_sanitisers_are_identical(self):
+        with open(READ) as f:
+            here = re.search(r"^JQ_SAFE='(.*)'$", f.read(), re.M).group(1)
+        with open(os.path.join(ROOT, ".github", "workflows", "release.yml")) as f:
+            there = re.search(r"^\s*JQ_SAFE: '(.*)'$", f.read(), re.M).group(1)
+        self.assertEqual(here, there)
+
+    def test_keys_equal_as_final_text_are_duplicates(self):
+        # A plain TRUE is a boolean to yq and a quoted "TRUE" a string, but both become the JSON key TRUE.
+        d = tempfile.mkdtemp()
+        try:
+            f = os.path.join(d, "build.yml")
+            for word in ("TRUE", "FALSE", "NULL"):
+                for a, b in ((word, '"%s"' % word), ('"%s"' % word, word)):
+                    with self.subTest(first=a, second=b):
+                        with open(f, "w") as fh:
+                            fh.write('family: custom\ndockerfile: Dockerfile\ngo: "1.27"\n'
+                                     'smoke-env:\n  %s: first\n  %s: second\n' % (a, b))
+                        p, written = run(f, self.cache)
+                        self.assertEqual(p.returncode, 1, p.stderr)
+                        self.assertEqual(written, "")
+                        self.assertIn("smoke-env.%s: duplicate key" % word, p.stderr)
+        finally:
+            shutil.rmtree(d)
+
+    def test_a_non_scalar_key_is_refused_cleanly(self):
+        d = tempfile.mkdtemp()
+        try:
+            f = os.path.join(d, "build.yml")
+            with open(f, "w") as fh:
+                fh.write('family: spa\nnode: "24"\n? {a: 1}\n: v\n')
+            p, written = run(f, self.cache)
+            self.assertEqual(p.returncode, 1, p.stderr)
+            self.assertEqual(written, "")
+            for line in p.stderr.strip().split("\n"):
+                self.assertTrue(line.startswith("::error::build.yml: "), line)
+        finally:
+            shutil.rmtree(d)
+
+    def test_a_long_key_is_capped_in_the_error_line(self):
+        d = tempfile.mkdtemp()
+        try:
+            f = os.path.join(d, "build.yml")
+            with open(f, "w") as fh:
+                fh.write('family: spa\nnode: "24"\n%s: 1\n' % ("k" * 2000))
+            p, _ = run(f, self.cache)
+            self.assertEqual(p.returncode, 1, p.stderr)
+            self.assertNotIn("k" * 301, p.stderr)
+        finally:
+            shutil.rmtree(d)
+
+    def test_validation_errors_cannot_carry_runner_commands(self):
+        d = tempfile.mkdtemp()
+        try:
+            for name, body in (("key-newline.yml", 'family: spa\nnode: "24"\n"a\\n::warning::x": 1\n'),
+                               ("key-command.yml", 'family: spa\nnode: "24"\n"x ##[add-mask]tok": 1\n'),
+                               ("value-newline.yml", 'family: spa\nnode: "24"\ncoolify-app: "a\\n::warning::x"\n'),
+                               ("value-command.yml", 'family: spa\nnode: "24"\ncoolify-app: "x ##[add-mask]tok"\n')):
+                f = os.path.join(d, name)
+                with open(f, "w") as fh:
+                    fh.write(body)
+                p, written = run(f, self.cache)
+                self.assertEqual(p.returncode, 1, p.stderr)
+                self.assertEqual(written, "")
+                self.assertNotIn("##[", p.stderr, name)
+                for line in p.stderr.strip().split("\n"):
+                    self.assertTrue(line.startswith("::error::build.yml: "), line)
+        finally:
+            shutil.rmtree(d)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
