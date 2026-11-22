@@ -7,9 +7,11 @@ usage() {
 Usage: build-image [--no-verify] [--no-smoke] [<repo dir>]
 
 Reads <repo dir>/.github/build.yml (default dir: .), runs `npm run verify` (node) or `make verify` (go)
-in the repo, builds localhost/<repo>:dev with podman as app.yml's image job does (a next migrate build
-also disables SELinux labels, for the podman VM), boots it and polls http://127.0.0.1:8080/healthz
-for 60 s. The container is always removed afterwards.
+in the repo, builds localhost/<repo>:dev with podman as app.yml's image job does, boots it and polls
+http://127.0.0.1:8080/healthz for 60 s. The container is always removed afterwards.
+
+A next build with migrate: true disables SELinux labels for the podman VM. That covers every build step,
+dependency install and app build included, so do not rely on that build to isolate untrusted code.
 
   --no-verify   skip the verify step
   --no-smoke    build only; do not boot the image
