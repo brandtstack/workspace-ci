@@ -463,6 +463,20 @@ def rows(port):
         r = run(port, name, script={key: 422, "fail_body": json.dumps({"message": "first\n::warning::injected"}).encode()})
         add("no-raw-body: %s keeps a multi-line message on one log line" % call,
             r["rc"] != 0 and "\n::warning::" not in r["out"], r["out"])
+        for label, text in (("mid-line", "x ##[stop-commands]tok"), ("split by a newline", "x #\n#[add-mask]tok"),
+                            ("after a hash", "x ###[add-mask]tok")):
+            r = run(port, name, script={key: 422, "fail_body": json.dumps({"message": text}).encode()})
+            add("no-runner-command: %s neutralises a %s ##[ command" % (call, label),
+                r["rc"] != 0 and "422" in r["out"] and "##[" not in r["out"], r["out"])
+        r = run(port, name, script={key: 422, "fail_body": json.dumps({"message": "é" * 400}).encode()})
+        add("message-cap: %s caps a message at 300 characters without splitting one" % call,
+            r["rc"] != 0 and "é" * 300 in r["out"] and "é" * 301 not in r["out"] and "�" not in r["out"], r["out"][:200])
+        add("timeout: %s sets a curl --max-time" % call, "--max-time 30" in step(name, port))
+
+    r = run(port, "Deploy", script={"deploy": {"deployments": [
+        {"message": "x ##[stop-commands]tok", "deployment_uuid": "dep-1"}]}})
+    add("no-runner-command: a successful Deploy neutralises ##[ in its message",
+        r["rc"] == 0 and "##[" not in r["out"] and "deployment_uuid=dep-1" in r["output"], r["out"])
 
     r = run(port, "Deploy", script={"deploy": {"deployments": [
         {"message": "queued-msg", "resource_uuid": planted, "deployment_uuid": "dep-1"}]}})
