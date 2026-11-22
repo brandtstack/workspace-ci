@@ -91,11 +91,47 @@ class StartSh(unittest.TestCase):
         self.assertEqual([c["argv"] for c in self.calls()], [["/app/server.js"]])
         self.assertNotIn("[start]", r.stdout)
 
+    def reset_calls(self):
+        p = os.path.join(self.tmp, "calls.jsonl")
+        if os.path.exists(p):
+            os.remove(p)
+
     def test_skip_migrations(self):
         self.with_config()
-        r = self.run_start({"SKIP_MIGRATIONS": "1"})
+        for value in ("1", "true"):
+            with self.subTest(value=value):
+                self.reset_calls()
+                r = self.run_start({"SKIP_MIGRATIONS": value})
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("[start] SKIP_MIGRATIONS set", r.stdout)
+                self.assertEqual([c["argv"] for c in self.calls()], [["/app/server.js"]])
+
+    def test_empty_or_unset_skip_migrations_migrates(self):
+        self.with_config()
+        for env in ({}, {"SKIP_MIGRATIONS": ""}):
+            with self.subTest(env=env):
+                self.reset_calls()
+                r = self.run_start({"DATABASE_URL": "postgresql://runtime", **env},
+                                   out="No pending migrations to apply.\n")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertNotIn("SKIP_MIGRATIONS set", r.stdout)
+                self.assertEqual([c["argv"][-2:] for c in self.calls()][0], ["migrate", "deploy"])
+                self.assertEqual(self.calls()[-1]["argv"], ["/app/server.js"])
+
+    def test_any_other_skip_migrations_value_refuses_to_start(self):
+        self.with_config()
+        for value in ("false", "0", "no", "TRUE", "True", "yes", " 1", "1 ", "true\n", "canary-value"):
+            with self.subTest(value=value):
+                self.reset_calls()
+                r = self.run_start({"DATABASE_URL": "postgresql://runtime", "SKIP_MIGRATIONS": value})
+                self.assertEqual(r.returncode, 1)
+                self.assertEqual(self.calls(), [], "neither migrate nor the server may run")
+                self.assertIn("SKIP_MIGRATIONS must be 1, true or empty: refusing to start the server", r.stderr)
+                self.assertNotIn("canary-value", r.stdout + r.stderr)
+
+    def test_skip_migrations_is_ignored_without_migrate(self):
+        r = self.run_start({"SKIP_MIGRATIONS": "false"})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("[start] SKIP_MIGRATIONS set", r.stdout)
         self.assertEqual([c["argv"] for c in self.calls()], [["/app/server.js"]])
 
     def test_migrate_then_server_with_minimal_env(self):

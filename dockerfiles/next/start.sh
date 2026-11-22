@@ -1,8 +1,10 @@
 #!/bin/sh
 # CMD of every shared next image (both runtimes; under dotenvx the ENTRYPOINT wrapper runs this, so the
 # environment is already decrypted). With contract `migrate: true` the image has /opt/migrate/prisma.config.ts:
-# apply pending migrations first, and refuse to start the server if that fails. SKIP_MIGRATIONS (any non-empty
-# value) skips them: the CI smoke has no database unless the contract sets smoke-postgres. Without `migrate`, /opt/migrate is empty and this only execs.
+# apply pending migrations first, and refuse to start the server if that fails. SKIP_MIGRATIONS=1 or true skips
+# them (the CI smoke has no database unless the contract sets smoke-postgres); unset or empty migrates; any other
+# value refuses to start, so a `false` or `0` can never skip by accident. The value is not printed. Without
+# `migrate`, /opt/migrate is empty and this only execs.
 #
 # The migration runs with a minimal environment: PATH, HOME, CHECKPOINT_DISABLE and DATABASE_URL only, never
 # the app's other (decrypted) secrets. DATABASE_URL there is MIGRATE_DATABASE_URL when set (a schema-owner
@@ -15,7 +17,12 @@ dir="${START_MIGRATE_DIR:-/opt/migrate}"
 server="${START_SERVER:-/app/server.js}"
 
 if [ -f "$dir/prisma.config.ts" ]; then
-  if [ -n "${SKIP_MIGRATIONS:-}" ]; then
+  case "${SKIP_MIGRATIONS:-}" in
+    (1|true) skip=1 ;;
+    ("") skip= ;;
+    (*) echo "[start] SKIP_MIGRATIONS must be 1, true or empty: refusing to start the server" >&2; exit 1 ;;
+  esac
+  if [ -n "$skip" ]; then
     echo "[start] SKIP_MIGRATIONS set: starting without migrations"
   else
     echo "[start] applying database migrations"
