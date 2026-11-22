@@ -89,7 +89,9 @@ fi
 
 # --- build -----------------------------------------------------------------------------------------------
 if [ "$FAMILY" = custom ]; then FILE="$DIR/$C_dockerfile"; else FILE="$ROOT/dockerfiles/$FAMILY.Dockerfile"; fi
-ARGS=(build -f "$FILE" --build-context "ws=$ROOT/dockerfiles" -t "$TAG")
+# label=disable: the podman machine VM enforces SELinux, which denies the next migrate stage's RUN bind mount of
+# prisma/. Local only: this script is not used by CI, and the flag changes no build instruction or layer content.
+ARGS=(build --security-opt label=disable -f "$FILE" --build-context "ws=$ROOT/dockerfiles" -t "$TAG")
 if [ "$FAMILY" = next ]; then
   if [ "$C_dotenvx" = true ]; then ARGS+=(--target runtime-dotenvx); else ARGS+=(--target runtime-plain); fi
 fi
