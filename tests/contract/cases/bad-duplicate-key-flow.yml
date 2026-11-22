@@ -1,0 +1,2 @@
+# expect: node: duplicate top-level key
+{family: spa, node: "24", node: "22"}

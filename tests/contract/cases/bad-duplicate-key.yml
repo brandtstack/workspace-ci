@@ -1,0 +1,4 @@
+# expect: family: duplicate top-level key
+family: next
+node: "24"
+family: spa

@@ -254,6 +254,64 @@ class ContractTests(unittest.TestCase):
         finally:
             shutil.rmtree(tc)
 
+    def test_yq_swapped_in_the_cache_after_the_check_is_not_executed(self):
+        # A sha256sum shim replaces the shared cached file right after hashing: the check-then-exec window.
+        run(os.path.join(CASES, "ok-spa-min.yml"), self.cache)
+        tc = tempfile.mkdtemp()
+        try:
+            yd = os.path.join(tc, "cache", "yq", YQ_VERSION)
+            os.makedirs(yd)
+            cached = os.path.join(yd, "yq")
+            shutil.copy(os.path.join(self.cache, "yq", YQ_VERSION, "yq"), cached)
+            bindir, temp = os.path.join(tc, "bin"), os.path.join(tc, "runner-temp")
+            os.makedirs(bindir)
+            os.makedirs(temp)
+            marker = os.path.join(tc, "ran")
+            shim = os.path.join(bindir, "sha256sum")
+            with open(shim, "w") as f:
+                f.write("#!/bin/sh\n"
+                        "python3 -c 'import hashlib,sys; p=sys.argv[1]; "
+                        "print(hashlib.sha256(open(p,\"rb\").read()).hexdigest() + \"  \" + p)' \"$1\"\n"
+                        "rm -f '%s'\nprintf '#!/bin/sh\\ntouch %s\\n' > '%s'\nchmod +x '%s'\n"
+                        % (cached, marker, cached, cached))
+            os.chmod(shim, 0o755)
+            p, written = run(os.path.join(CASES, "ok-spa-min.yml"), os.path.join(tc, "cache"),
+                             {"PATH": bindir + os.pathsep + os.environ["PATH"], "RUNNER_TEMP": temp})
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertFalse(os.path.exists(marker), "the swapped cache file was executed")
+            self.assertEqual(parse_output(written), EXPECTED["ok-spa-min"])
+            self.assertEqual(os.listdir(temp), [], "the private yq copy must be removed")
+        finally:
+            shutil.rmtree(tc)
+
+    def test_yq_mismatch_leaves_no_copy_in_runner_temp(self):
+        tc = tempfile.mkdtemp()
+        try:
+            yd, temp = os.path.join(tc, "yq", YQ_VERSION), os.path.join(tc, "runner-temp")
+            os.makedirs(yd)
+            os.makedirs(temp)
+            with open(os.path.join(yd, "yq"), "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            p, _ = run(os.path.join(CASES, "ok-spa-min.yml"), tc, {"RUNNER_TEMP": temp})
+            self.assertEqual(p.returncode, 1)
+            self.assertEqual(os.listdir(temp), [])
+        finally:
+            shutil.rmtree(tc)
+
+    def test_duplicate_key_error_stays_on_one_line(self):
+        d = tempfile.mkdtemp()
+        try:
+            f = os.path.join(d, "build.yml")
+            with open(f, "w") as fh:
+                fh.write('family: spa\nnode: "24"\n"a\\n::warning::x": 1\n"a\\n::warning::x": 2\n')
+            p, written = run(f, self.cache)
+            self.assertEqual(p.returncode, 1, p.stderr)
+            self.assertEqual(written, "")
+            self.assertNotIn("\n::warning::", p.stderr)
+            self.assertIn("duplicate top-level key", p.stderr)
+        finally:
+            shutil.rmtree(d)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

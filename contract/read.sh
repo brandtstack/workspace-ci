@@ -33,26 +33,32 @@ sha256_of() {
 }
 
 ensure_yq() {
-  local os arch plat want dir
+  local os arch plat want dir cached
   case "$(uname -s)" in Linux) os=linux ;; Darwin) os=darwin ;; *) die "<yq>: unsupported OS $(uname -s)" ;; esac
   case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) die "<yq>: unsupported arch $(uname -m)" ;; esac
   plat="${os}_${arch}"
   want="$(yq_sha "$plat")"
   if [ -n "${RUNNER_TOOL_CACHE:-}" ]; then dir="$RUNNER_TOOL_CACHE/yq/$YQ_VERSION"
   else dir="${XDG_CACHE_HOME:-$HOME/.cache}/workspace-ci/yq/$YQ_VERSION"; fi
-  YQ="$dir/yq"
-  if [ ! -e "$YQ" ]; then
+  cached="$dir/yq"
+  if [ ! -e "$cached" ]; then
     mkdir -p "$dir"
     local tmp="$dir/yq.tmp.$$"
     curl -fsSL --retry 3 -o "$tmp" "https://github.com/mikefarah/yq/releases/download/v$YQ_VERSION/yq_$plat" \
       || { rm -f "$tmp"; die "<yq>: download failed"; }
-    mv "$tmp" "$YQ"
+    mv "$tmp" "$cached"
   fi
-  # Verified every run, cached or fresh, before the binary is ever executed.
+  [ -f "$cached" ] || die "<yq>: $cached is not a regular file. Not executed"
+  # The tool cache can be shared with other jobs, so checking it and then executing it would leave a window to
+  # swap the file. Copy it into a private directory, verify the copy, and execute only the copy.
+  YQ_DIR="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/yq.XXXXXX")" || die "<yq>: could not create a private directory"
+  YQ="$YQ_DIR/yq"
+  trap 'rm -f "$YQ"; rmdir "$YQ_DIR" 2>/dev/null || true' EXIT
+  cp "$cached" "$YQ" || die "<yq>: could not copy $cached"
   if [ "$(sha256_of "$YQ")" != "$want" ]; then
-    die "<yq>: checksum mismatch for $YQ (expected the pinned v$YQ_VERSION $plat binary). Not executed. If it is a corrupt cache, delete $YQ and rerun"
+    die "<yq>: checksum mismatch for $cached (expected the pinned v$YQ_VERSION $plat binary). Not executed. If it is a corrupt cache, delete $cached and rerun"
   fi
-  chmod +x "$YQ"
+  chmod 700 "$YQ"
 }
 
 [ -f "$FILE" ] || die "<file>: $FILE not found"
@@ -64,6 +70,14 @@ ensure_yq
 JSON="$("$YQ" -o=json '(.. | select(tag == "!!float" and (path | length) > 0)) |= {"!!float": .}' "$FILE" 2>/dev/null)" || die "<file>: not valid YAML"
 [ -n "$JSON" ] || JSON=null
 [ "$(printf '%s' "$JSON" | jq -s length)" -le 1 ] || die "<file>: more than one YAML document (only one is allowed)"
+
+# yq keeps both entries of a repeated key and jq would take the last, so a later line could silently override an
+# earlier one. Key names are stripped of control characters and runner commands before they reach the log.
+DUPES="$("$YQ" -o=json -I=0 'select(tag == "!!map") | keys' "$FILE" 2>/dev/null | jq -r '
+  group_by(.) | map(select(length > 1) | .[0] | tostring | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #["))
+  | .[] | "::error::build.yml: \(.): duplicate top-level key (only one is allowed)"')" \
+  || die "<file>: could not read the top-level keys"
+if [ -n "$DUPES" ]; then printf '%s\n' "$DUPES" >&2; exit 1; fi
 
 # default go-main name: the repo name, else the directory that contains .github/
 if [ -n "${GITHUB_REPOSITORY:-}" ]; then DEFNAME="${GITHUB_REPOSITORY##*/}"
