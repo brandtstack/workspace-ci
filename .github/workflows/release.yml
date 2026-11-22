@@ -587,14 +587,15 @@ jobs:
               -H "CF-Access-Client-Secret: ${CFSEC}" \
               "${API}$1" 2>/dev/null || echo 000
           }
-          field() { jq -rs "${JQ_DOC}doc | $1 // empty" "$R" 2>/dev/null || true; }   # not one JSON document -> ""
 
           status=timeout
           deadline=$(( $(date +%s) + POLL_TIMEOUT ))
           while :; do
             code=$(get "/deployments/${DEP}")
             if [ "$code" = "200" ]; then
-              s=$(field .status)
+              # Matched raw inside jq: a shell substitution would drop a trailing newline from the status.
+              s=$(jq -rs "$JQ_DOC"'doc | .status as $s
+                | if any(("finished", "failed", "cancelled-by-user", "error"); . == $s) then $s else empty end' "$R" 2>/dev/null || true)
               case "$s" in
                 finished|failed|cancelled-by-user|error) status="$s"; break ;;
               esac
@@ -626,12 +627,15 @@ jobs:
             shown=$(jq -rs "$JQ_SAFE$JQ_DOC"'doc | (.docker_registry_image_tag // empty) | safe' "$R" 2>/dev/null || true)
           fi
           # Only same, or a failed read or absent tag after a finished deploy, may reach the live branch below.
+          # A deploy that already failed keeps its failure state whatever the app record looks like.
           case "$tag_state" in
             same|moved|none) ;;
             *)
-              set_state "❔ deploy state unknown (malformed app record)"
-              echo "::error::Coolify returned a malformed app record; ${VER} was not marked live."
-              exit 1 ;;
+              if [ "$status" = "finished" ]; then
+                set_state "❔ deploy state unknown (malformed app record)"
+                echo "::error::Coolify returned a malformed app record; ${VER} was not marked live."
+                exit 1
+              fi ;;
           esac
           if [ "$tag_state" = "moved" ]; then
             set_state "⏸ superseded by ${shown:-a newer version}"

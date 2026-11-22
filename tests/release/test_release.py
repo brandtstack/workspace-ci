@@ -539,6 +539,18 @@ def rows(port):
         add("malformed-app: %s on a 200 never marks the version live or Latest" % label,
             r["rc"] != 0 and "✅" not in body and "unknown" in body and not [c for c in edits(r) if "--latest" in c],
             r["out"] + body)
+    for st in ("failed", "error", "cancelled-by-user"):
+        r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+                script={"deployments": [(200, st)], "app_raw": b"<html>edge error</html>"})
+        body = r["rel"].get(VER, {}).get("body", "")
+        add("malformed-app: a %s deploy still reports the failure" % st,
+            r["rc"] != 0 and ("deploy failed (%s)" % st) in body and "unknown" not in body, r["out"] + body)
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            env={"POLL_TIMEOUT": "1"}, script={"deployments": [(200, "finished\n")]})
+    body = r["rel"].get(VER, {}).get("body", "")
+    add("exact-status: a status differing from finished by a newline is not terminal",
+        r["rc"] != 0 and "✅" not in body and "unknown" in body, r["out"] + body)
+
     r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
             script={"app_raw": b'{"uuid":"app-1"}'})
     add("malformed-app: a record with no tag field still warns and marks live",

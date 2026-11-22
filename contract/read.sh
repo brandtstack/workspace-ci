@@ -53,6 +53,7 @@ ensure_yq() {
   # swap the file. Copy it into a private directory, verify the copy, and execute only the copy.
   YQ_DIR="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/yq.XXXXXX")" || die "<yq>: could not create a private directory"
   YQ="$YQ_DIR/yq"
+  # This is the script's only EXIT trap. Anything else that needs one must extend it, or the copy is left behind.
   trap 'rm -f "$YQ"; rmdir "$YQ_DIR" 2>/dev/null || true' EXIT
   cp "$cached" "$YQ" || die "<yq>: could not copy $cached"
   if [ "$(sha256_of "$YQ")" != "$want" ]; then
