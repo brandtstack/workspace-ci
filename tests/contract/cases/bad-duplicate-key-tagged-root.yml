@@ -1,0 +1,6 @@
+# expect: coolify-app: duplicate top-level key
+!x
+family: spa
+node: "24"
+coolify-app: first0example0test
+coolify-app: second0example0test

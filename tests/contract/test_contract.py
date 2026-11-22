@@ -312,6 +312,23 @@ class ContractTests(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
+    def test_error_lines_escape_percent_encoded_line_breaks(self):
+        # The runner decodes %0A and %0D in ::error:: messages, so a key name must not carry them through.
+        d = tempfile.mkdtemp()
+        try:
+            for name, body in (("dup.yml", 'family: spa\nnode: "24"\n"a%0A::warning::x": 1\n"a%0A::warning::x": 2\n'),
+                               ("unknown.yml", 'family: spa\nnode: "24"\n"a%0D%0Ab": 1\n')):
+                f = os.path.join(d, name)
+                with open(f, "w") as fh:
+                    fh.write(body)
+                p, written = run(f, self.cache)
+                self.assertEqual(p.returncode, 1, p.stderr)
+                self.assertEqual(written, "")
+                self.assertNotRegex(p.stderr, r"%0[AD]", name)
+                self.assertIn("%25", p.stderr, name)
+        finally:
+            shutil.rmtree(d)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

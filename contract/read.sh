@@ -72,9 +72,10 @@ JSON="$("$YQ" -o=json '(.. | select(tag == "!!float" and (path | length) > 0)) |
 [ "$(printf '%s' "$JSON" | jq -s length)" -le 1 ] || die "<file>: more than one YAML document (only one is allowed)"
 
 # yq keeps both entries of a repeated key and jq would take the last, so a later line could silently override an
-# earlier one. Key names are stripped of control characters and runner commands before they reach the log.
-DUPES="$("$YQ" -o=json -I=0 'select(tag == "!!map") | keys' "$FILE" 2>/dev/null | jq -r '
-  group_by(.) | map(select(length > 1) | .[0] | tostring | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #["))
+# earlier one. Selected by node kind, not tag, so a custom tag on the root map cannot skip the check. Key names have
+# `%` escaped (the runner decodes %0A in ::error:: text), and control characters and runner commands removed.
+DUPES="$("$YQ" -o=json -I=0 'select(kind == "map") | keys' "$FILE" 2>/dev/null | jq -r '
+  group_by(.) | map(select(length > 1) | .[0] | tostring | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #["))
   | .[] | "::error::build.yml: \(.): duplicate top-level key (only one is allowed)"')" \
   || die "<file>: could not read the top-level keys"
 if [ -n "$DUPES" ]; then printf '%s\n' "$DUPES" >&2; exit 1; fi
@@ -86,7 +87,7 @@ else DEFNAME="$(basename "$(cd "$(dirname "$FILE")/.." && pwd)")"; fi
 RESULT="$(printf '%s' "$JSON" | jq -c --arg ws "$WS_ROOT" --arg defname "$DEFNAME" -f "$HERE/validate.jq")"
 
 if [ "$(printf '%s' "$RESULT" | jq 'has("errors")')" = true ]; then
-  printf '%s' "$RESULT" | jq -r '.errors[] | "::error::build.yml: " + .' >&2
+  printf '%s' "$RESULT" | jq -r '.errors[] | "::error::build.yml: " + gsub("%"; "%25")' >&2
   exit 1
 fi
 

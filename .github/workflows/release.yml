@@ -303,7 +303,7 @@ jobs:
           code=$(call PATCH "$want")
           echo "settings PATCH -> ${code}"
           if [ "$code" != "200" ]; then
-            msg=$(jq -r '(.message // empty) | strings | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[") | .[:300]' "$R" 2>/dev/null || true)
+            msg=$(jq -r '(.message // empty) | strings | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[") | .[:300]' "$R" 2>/dev/null || true)
             echo "::error::Coolify refused the settings PATCH (HTTP ${code}${msg:+: ${msg}}). 401/403 means COOLIFY_TOKEN cannot write applications. Nothing was promoted, tagged or deployed; a re-run retries."
             exit 1
           fi
@@ -444,7 +444,7 @@ jobs:
             "https://coolify.brandtstack.com/api/v1/applications/${UUID}/envs/bulk")
           echo "APP_VERSION upsert -> ${code}"
           if [ "$code" != "200" ] && [ "$code" != "201" ]; then
-            msg=$(jq -r '(.message // empty) | strings | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[") | .[:300]' "$R" 2>/dev/null || true)
+            msg=$(jq -r '(.message // empty) | strings | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[") | .[:300]' "$R" 2>/dev/null || true)
             echo "::error::Coolify refused the APP_VERSION upsert (HTTP ${code}${msg:+: ${msg}})."
             exit 1
           fi
@@ -470,7 +470,7 @@ jobs:
             "https://coolify.brandtstack.com/api/v1/applications/${UUID}")
           echo "image tag PATCH -> ${code}"
           if [ "$code" != "200" ]; then
-            msg=$(jq -r '(.message // empty) | strings | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[") | .[:300]' "$R" 2>/dev/null || true)
+            msg=$(jq -r '(.message // empty) | strings | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[") | .[:300]' "$R" 2>/dev/null || true)
             echo "::error::Coolify refused the image tag PATCH (HTTP ${code}${msg:+: ${msg}})."
             exit 1
           fi
@@ -494,7 +494,7 @@ jobs:
             -H "CF-Access-Client-Id: ${CFID}" \
             -H "CF-Access-Client-Secret: ${CFSEC}" \
             "https://coolify.brandtstack.com/api/v1/deploy?uuid=${UUID}")
-          msg=$(jq -r '(.message // .deployments[0]?.message // empty) | strings | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[") | .[:300]' "$R" 2>/dev/null || true)
+          msg=$(jq -r '(.message // .deployments[0]?.message // empty) | strings | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[") | .[:300]' "$R" 2>/dev/null || true)
           echo "deploy -> ${code}${msg:+: ${msg}}"
           if [ "$code" != "200" ]; then
             echo "::error::Coolify refused the deploy (HTTP ${code}${msg:+: ${msg}})."

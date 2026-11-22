@@ -463,6 +463,9 @@ def rows(port):
         r = run(port, name, script={key: 422, "fail_body": json.dumps({"message": "first\n::warning::injected"}).encode()})
         add("no-raw-body: %s keeps a multi-line message on one log line" % call,
             r["rc"] != 0 and "\n::warning::" not in r["out"], r["out"])
+        r = run(port, name, script={key: 422, "fail_body": json.dumps({"message": "first%0A::warning::x%0Dy"}).encode()})
+        add("no-raw-body: %s escapes percent-encoded line breaks" % call,
+            r["rc"] != 0 and "%0A" not in r["out"] and "%0D" not in r["out"] and "first%250A" in r["out"], r["out"])
         for label, text in (("mid-line", "x ##[stop-commands]tok"), ("split by a newline", "x #\n#[add-mask]tok"),
                             ("after a hash", "x ###[add-mask]tok")):
             r = run(port, name, script={key: 422, "fail_body": json.dumps({"message": text}).encode()})
