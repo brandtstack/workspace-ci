@@ -55,6 +55,8 @@ jobs:
       # %0A in ::error:: text), control characters are removed (no second log line), `##[` commands are broken up.
       # For display only: it is lossy, so never compare its output. Kept identical to contract/read.sh (tested).
       JQ_SAFE: 'def safe: tostring | .[:300] | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[");'
+      # Used with `jq -s`: a body holding several JSON documents would otherwise print one line per document.
+      JQ_DOC: 'def doc: if length == 1 then .[0] else error("not one document") end;'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -308,7 +310,7 @@ jobs:
           code=$(call PATCH "$want")
           echo "settings PATCH -> ${code}"
           if [ "$code" != "200" ]; then
-            msg=$(jq -r "$JQ_SAFE"'(.message // empty) | strings | safe' "$R" 2>/dev/null || true)
+            msg=$(jq -rs "$JQ_SAFE$JQ_DOC"'doc | (.message // empty) | strings | safe' "$R" 2>/dev/null || true)
             echo "::error::Coolify refused the settings PATCH (HTTP ${code}${msg:+: ${msg}}). 401/403 means COOLIFY_TOKEN cannot write applications. Nothing was promoted, tagged or deployed; a re-run retries."
             exit 1
           fi
@@ -318,9 +320,9 @@ jobs:
             exit 1
           fi
           # Compare as strings; Coolify may store a bool as 1/0 and a port as a number.
-          diff=$(jq -r --argjson want "$want" "$JQ_SAFE"'
+          diff=$(jq -rs --argjson want "$want" "$JQ_SAFE$JQ_DOC"'
             def norm: if . == true or . == 1 then "true" elif . == false or . == 0 then "false" else tostring end;
-            . as $got | $want | to_entries[]
+            doc as $got | $want | to_entries[]
             | (if (.value | type) == "boolean" then (.value | norm) else (.value | tostring) end) as $w
             | (if (.value | type) == "boolean" then ($got[.key] | norm) else ($got[.key] | tostring) end) as $g
             | select($w != $g) | "\(.key): want \($w), Coolify has \($g)" | safe' "$R" 2>/dev/null) || diff="read-back is not JSON"
@@ -449,7 +451,7 @@ jobs:
             "https://coolify.brandtstack.com/api/v1/applications/${UUID}/envs/bulk")
           echo "APP_VERSION upsert -> ${code}"
           if [ "$code" != "200" ] && [ "$code" != "201" ]; then
-            msg=$(jq -r "$JQ_SAFE"'(.message // empty) | strings | safe' "$R" 2>/dev/null || true)
+            msg=$(jq -rs "$JQ_SAFE$JQ_DOC"'doc | (.message // empty) | strings | safe' "$R" 2>/dev/null || true)
             echo "::error::Coolify refused the APP_VERSION upsert (HTTP ${code}${msg:+: ${msg}})."
             exit 1
           fi
@@ -475,7 +477,7 @@ jobs:
             "https://coolify.brandtstack.com/api/v1/applications/${UUID}")
           echo "image tag PATCH -> ${code}"
           if [ "$code" != "200" ]; then
-            msg=$(jq -r "$JQ_SAFE"'(.message // empty) | strings | safe' "$R" 2>/dev/null || true)
+            msg=$(jq -rs "$JQ_SAFE$JQ_DOC"'doc | (.message // empty) | strings | safe' "$R" 2>/dev/null || true)
             echo "::error::Coolify refused the image tag PATCH (HTTP ${code}${msg:+: ${msg}})."
             exit 1
           fi
@@ -499,7 +501,7 @@ jobs:
             -H "CF-Access-Client-Id: ${CFID}" \
             -H "CF-Access-Client-Secret: ${CFSEC}" \
             "https://coolify.brandtstack.com/api/v1/deploy?uuid=${UUID}")
-          msg=$(jq -r "$JQ_SAFE"'(.message // .deployments[0]?.message // empty) | strings | safe' "$R" 2>/dev/null || true)
+          msg=$(jq -rs "$JQ_SAFE$JQ_DOC"'doc | (.message // .deployments[0]?.message // empty) | strings | safe' "$R" 2>/dev/null || true)
           echo "deploy -> ${code}${msg:+: ${msg}}"
           if [ "$code" != "200" ]; then
             echo "::error::Coolify refused the deploy (HTTP ${code}${msg:+: ${msg}})."
@@ -507,7 +509,7 @@ jobs:
           fi
           echo "deployment queued for ${UUID}"
           echo "queued=true" >> "$GITHUB_OUTPUT"
-          dep=$(jq -r '.deployments[0].deployment_uuid // empty' "$R" 2>/dev/null || true)
+          dep=$(jq -rs "$JQ_DOC"'doc | .deployments[0].deployment_uuid // empty' "$R" 2>/dev/null || true)
           # It goes into GITHUB_OUTPUT and a URL, so only an id-shaped value is accepted.
           if ! [[ "$dep" =~ ^[A-Za-z0-9_-]+$ ]]; then
             echo "::error::/deploy returned no usable deployment_uuid; cannot confirm the deploy."
@@ -585,7 +587,7 @@ jobs:
               -H "CF-Access-Client-Secret: ${CFSEC}" \
               "${API}$1" 2>/dev/null || echo 000
           }
-          field() { jq -r "$1 // empty" "$R" 2>/dev/null || true; }   # non-JSON body -> ""
+          field() { jq -rs "${JQ_DOC}doc | $1 // empty" "$R" 2>/dev/null || true; }   # not one JSON document -> ""
 
           status=timeout
           deadline=$(( $(date +%s) + POLL_TIMEOUT ))
@@ -596,7 +598,7 @@ jobs:
               case "$s" in
                 finished|failed|cancelled-by-user|error) status="$s"; break ;;
               esac
-              echo "deployment ${DEP}: $(jq -r "$JQ_SAFE"'(.status // "unknown") | safe' "$R" 2>/dev/null || echo unknown)"
+              echo "deployment ${DEP}: $(jq -rs "$JQ_SAFE$JQ_DOC"'doc | (.status // "unknown") | safe' "$R" 2>/dev/null || echo unknown)"
             else
               echo "deployment poll -> HTTP ${code}, retrying"
             fi
@@ -615,13 +617,23 @@ jobs:
           tag_state=none
           shown=""
           if [ "$(get "/applications/${UUID}")" = "200" ]; then
-            tag_state=$(jq -r --arg v "$VER" '(.docker_registry_image_tag // "") as $t
-              | if $t == "" then "none" elif $t == $v then "same" else "moved" end' "$R" 2>/dev/null || echo none)
-            shown=$(jq -r "$JQ_SAFE"'(.docker_registry_image_tag // empty) | safe' "$R" 2>/dev/null || true)
+            tag_state=$(jq -rs --arg v "$VER" 'if length == 0 then "none"
+              elif length > 1 or (.[0] | type) != "object" then "malformed"
+              else (.[0].docker_registry_image_tag // "") as $t
+                | if $t == "" then "none" elif $t == $v then "same" else "moved" end end' "$R" 2>/dev/null || echo none)
+            shown=$(jq -rs "$JQ_SAFE$JQ_DOC"'doc | (.docker_registry_image_tag // empty) | safe' "$R" 2>/dev/null || true)
           fi
+          # Only same, or an unreadable record after a finished deploy, may reach the live branch below.
+          case "$tag_state" in
+            same|moved|none) ;;
+            *)
+              set_state "❔ deploy state unknown (malformed app record)"
+              echo "::error::Coolify returned a malformed app record; ${VER} was not marked live."
+              exit 1 ;;
+          esac
           if [ "$tag_state" = "moved" ]; then
-            set_state "⏸ superseded by ${shown}"
-            echo "deployment ${DEP} ended '${status}'; the app has moved on to ${shown}"
+            set_state "⏸ superseded by ${shown:-a newer version}"
+            echo "deployment ${DEP} ended '${status}'; the app has moved on to ${shown:-a newer version}"
           elif [ "$status" = "finished" ]; then
             # An unreadable app record after a finished deploy is still a finished deploy.
             [ "$tag_state" != "none" ] || echo "::warning::could not read the app's image tag; marking ${VER} live"

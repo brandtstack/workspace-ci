@@ -65,6 +65,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
             seq = s.get("deployments", [(200, "finished")])
             code, status = seq[min(Stub.polls, len(seq) - 1)]
             Stub.polls += 1
+            if isinstance(status, bytes):
+                return self.raw(code, status)
             if status == "<raw>":
                 data = b"<html>not json</html>"
                 self.send_response(code); self.send_header("content-length", str(len(data))); self.end_headers()
@@ -72,6 +74,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
             return self.reply(code, {"status": status, "deployment_uuid": "dep-1",
                                      "application": {"envs": [{"key": "X", "value": FX["PLANTED"]}]}})
         if self.path.startswith("/api/v1/applications/"):
+            if "app_raw" in s:
+                return self.raw(200, s["app_raw"])
             return self.reply(s.get("app_code", 200), dict(Stub.app, docker_registry_image_tag=s.get("app_tag", VER),
                                                            planted=FX["PLANTED"], **s.get("app_override", {})))
         if self.path.startswith("/api/v1/deploy"):
@@ -506,6 +510,28 @@ def rows(port):
             script={"app_code": 500})
     add("live-check: an unreadable app after a finished deploy still warns and marks live",
         r["rc"] == 0 and "could not read the app's image tag" in r["out"] and "✅" in r["rel"][VER]["body"], r["out"])
+
+    # A body holding several JSON documents must not print one line per document or decide the release state.
+    for call, (name, key) in calls.items():
+        r = run(port, name, script={key: 422, "fail_body": b'{"message":"a"}{"message":"::add-mask::tok"}'})
+        add("multi-doc: %s prints no line per document" % call,
+            r["rc"] != 0 and "422" in r["out"] and "\n::add-mask::" not in r["out"], r["out"])
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"deployments": [(200, b'{"status":"running"}{"status":"::warning::injected"}'), (200, "finished")]})
+    add("multi-doc: a polled status prints no line per document", r["rc"] == 0 and "\n::warning::" not in r["out"], r["out"])
+    r = run(port, "Sync Coolify from build.yml", env={"FAMILY": "go", "TOOLCHAIN": "go"},
+            script={"app_raw": b'{"ports_exposes":"80","health_check_enabled":false}{"ports_exposes":"::warning::x"}'})
+    add("multi-doc: a settings read-back is refused", r["rc"] != 0 and "\n::warning::" not in r["out"], r["out"])
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"app_raw": b'{"docker_registry_image_tag":"v9.9.9"}{"docker_registry_image_tag":"v9.9.9"}'})
+    body = r["rel"].get(VER, {}).get("body", "")
+    add("multi-doc: an app record never marks the version live or Latest",
+        r["rc"] != 0 and "✅" not in body and "unknown" in body and not [c for c in edits(r) if "--latest" in c], r["out"] + body)
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"app_tag": "\u0007"})
+    body = r["rel"].get(VER, {}).get("body", "")
+    add("superseded: a tag with nothing printable still names a newer version",
+        r["rc"] == 0 and "superseded by a newer version" in body and "✅" not in body, r["out"] + body)
 
     for bad in ("dep-1\nevil=1", "../x", "", "dep 1"):
         r = run(port, "Deploy", script={"deploy": {"deployments": [{"message": "q", "deployment_uuid": bad}]}})
