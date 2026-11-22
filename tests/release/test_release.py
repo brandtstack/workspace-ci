@@ -492,6 +492,21 @@ def rows(port):
     body = r["rel"].get(VER, {}).get("body", "")
     add("safe-log: a hostile image tag is sanitised in the log and the Release",
         r["rc"] == 0 and clean(r["out"]) and clean(body) and "superseded" in body, r["out"] + body)
+    for label, tag in (("a control character", VER + "\u0007"), ("a trailing newline", VER + "\n"),
+                       ("a C1 control", VER + "\u0085"), ("a 300-character prefix", VER + "x" * 400)):
+        r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+                script={"app_tag": tag})
+        body = r["rel"].get(VER, {}).get("body", "")
+        add("live-check: a tag differing from the version by %s is not marked live" % label,
+            r["rc"] == 0 and "superseded" in body and "✅" not in body and not [c for c in edits(r) if "--latest" in c],
+            r["out"] + body)
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER)
+    add("live-check: the exact version is still marked live", r["rc"] == 0 and "✅" in r["rel"][VER]["body"], r["out"])
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"app_code": 500})
+    add("live-check: an unreadable app after a finished deploy still warns and marks live",
+        r["rc"] == 0 and "could not read the app's image tag" in r["out"] and "✅" in r["rel"][VER]["body"], r["out"])
+
     for bad in ("dep-1\nevil=1", "../x", "", "dep 1"):
         r = run(port, "Deploy", script={"deploy": {"deployments": [{"message": "q", "deployment_uuid": bad}]}})
         add("safe-output: deployment_uuid %r is refused" % bad,

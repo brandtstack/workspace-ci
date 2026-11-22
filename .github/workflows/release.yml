@@ -53,7 +53,8 @@ jobs:
     env:
       # Coolify text reaches the runner's log parser only through this filter: `%` is escaped (the runner decodes
       # %0A in ::error:: text), control characters are removed (no second log line), `##[` commands are broken up.
-      JQ_SAFE: 'def safe: tostring | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[") | .[:300];'
+      # For display only: it is lossy, so never compare its output. Kept identical to contract/read.sh (tested).
+      JQ_SAFE: 'def safe: tostring | .[:300] | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[");'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -610,14 +611,20 @@ jobs:
             exit 1
           fi
 
-          cur=""
-          if [ "$(get "/applications/${UUID}")" = "200" ]; then cur=$(jq -r "$JQ_SAFE"'(.docker_registry_image_tag // empty) | strings | safe' "$R" 2>/dev/null || true); fi
-          if [ -n "$cur" ] && [ "$cur" != "$VER" ]; then
-            set_state "⏸ superseded by ${cur}"
-            echo "deployment ${DEP} ended '${status}'; the app has moved on to ${cur}"
+          # Compared raw inside jq (a shell substitution would drop trailing newlines); `shown` is for display only.
+          tag_state=none
+          shown=""
+          if [ "$(get "/applications/${UUID}")" = "200" ]; then
+            tag_state=$(jq -r --arg v "$VER" '(.docker_registry_image_tag // "") as $t
+              | if $t == "" then "none" elif $t == $v then "same" else "moved" end' "$R" 2>/dev/null || echo none)
+            shown=$(jq -r "$JQ_SAFE"'(.docker_registry_image_tag // empty) | safe' "$R" 2>/dev/null || true)
+          fi
+          if [ "$tag_state" = "moved" ]; then
+            set_state "⏸ superseded by ${shown}"
+            echo "deployment ${DEP} ended '${status}'; the app has moved on to ${shown}"
           elif [ "$status" = "finished" ]; then
             # An unreadable app record after a finished deploy is still a finished deploy.
-            [ -n "$cur" ] || echo "::warning::could not read the app's image tag; marking ${VER} live"
+            [ "$tag_state" != "none" ] || echo "::warning::could not read the app's image tag; marking ${VER} live"
             set_state "✅ live in production $(date -u +%Y-%m-%dT%H:%M:%SZ)" --latest
           else
             set_state "❌ deploy failed (${status})"

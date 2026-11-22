@@ -329,6 +329,26 @@ class ContractTests(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
+    def test_the_two_log_sanitisers_are_identical(self):
+        import yaml
+        with open(READ) as f:
+            here = re.search(r"^JQ_SAFE='(.*)'$", f.read(), re.M).group(1)
+        with open(os.path.join(ROOT, ".github", "workflows", "release.yml")) as f:
+            there = yaml.safe_load(f)["jobs"]["release"]["env"]["JQ_SAFE"]
+        self.assertEqual(here, there)
+
+    def test_a_long_key_is_capped_in_the_error_line(self):
+        d = tempfile.mkdtemp()
+        try:
+            f = os.path.join(d, "build.yml")
+            with open(f, "w") as fh:
+                fh.write('family: spa\nnode: "24"\n%s: 1\n' % ("k" * 2000))
+            p, _ = run(f, self.cache)
+            self.assertEqual(p.returncode, 1, p.stderr)
+            self.assertNotIn("k" * 301, p.stderr)
+        finally:
+            shutil.rmtree(d)
+
     def test_validation_errors_cannot_carry_runner_commands(self):
         d = tempfile.mkdtemp()
         try:

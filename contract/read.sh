@@ -73,7 +73,8 @@ JSON="$("$YQ" -o=json '(.. | select(tag == "!!float" and (path | length) > 0)) |
 
 # Text from build.yml reaches the runner's log parser only through this filter: `%` is escaped (the runner decodes
 # %0A in ::error:: text), control characters are removed (no second log line), and `##[` commands are broken up.
-JQ_SAFE='def safe: tostring | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[");'
+# Kept identical to JQ_SAFE in .github/workflows/release.yml (tested).
+JQ_SAFE='def safe: tostring | .[:300] | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[");'
 
 # What a reader sees must be what the contract means. A merge key can override an earlier key, and yq drops or applies
 # it before validate.jq runs, so anchors, aliases and merge keys are refused anywhere, on values and on keys.
