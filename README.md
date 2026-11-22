@@ -393,8 +393,10 @@ wrapper-ENTRYPOINT recipe: [`dockerfiles/README.md`](dockerfiles/README.md#custo
 
 `scripts/build-image [--no-verify] [--no-smoke] [<repo dir>]` builds what the `image` job builds, with
 podman only: it reads the repo's `build.yml`, runs `npm run verify` (or `make verify` for go), builds
-`localhost/<repo>:dev` with the same Dockerfile, target and build args, then boots it with
-`-p 127.0.0.1:8080:80` and polls `/healthz` for 60 s. It exits non-zero on any failure and prints the
+`localhost/<repo>:dev` with the same Dockerfile, target and build args (a `next` build with `migrate: true`
+also passes `--security-opt label=disable`, because the podman VM's SELinux denies its `prisma/` bind mount;
+this turns off SELinux separation for every build step, dependency install and app build included, so do not
+rely on that build to isolate untrusted code), then boots it with `-p 127.0.0.1:8080:80` and polls `/healthz` for 60 s. It exits non-zero on any failure and prints the
 container log. A contract with `private-registry: true` needs `NPM_TOKEN` exported. `BUILD_IMAGE_PORT`
 changes the host port and `BUILD_IMAGE_SMOKE_TIMEOUT` the 60 s wait. It applies `smoke-env`, `smoke-random` and `smoke-postgres` the way app.yml does (one env file, a throwaway `docker.io/library/postgres:16.15-alpine` on a per-run podman network, reachable as `smoke-pg`), and removes them afterwards. Tests (fake podman): `tests/build-image/test_build_image.py`.
 
