@@ -50,7 +50,8 @@ The repo must provide:
   - **`prisma.config.ts` may import only `prisma/config` and `dotenv`**: they are the only modules in
     `/opt/migrate`. It must read the URL from `DATABASE_URL`.
   - **Start.** `start.sh` runs `prisma migrate deploy` from `/opt/migrate`. A failed migration exits non-zero
-    and the server never starts. A non-empty `SKIP_MIGRATIONS` skips the step.
+    and the server never starts. `SKIP_MIGRATIONS=1` or `true` skips the step,
+    unset or empty migrates, and any other value refuses to start.
   - **Credentials and environment.** The migration runs with `PATH`, `HOME`, `CHECKPOINT_DISABLE` and
     `DATABASE_URL` only, never the app's other secrets. Set `MIGRATE_DATABASE_URL` to give the migration a
     schema-owner role while the server's `DATABASE_URL` stays a least-privilege one; `start.sh` unsets it before
