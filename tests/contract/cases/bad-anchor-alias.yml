@@ -1,0 +1,4 @@
+# expect: <file>: YAML anchors, aliases and merge keys are not allowed
+family: &f spa
+node: "24"
+smoke-args: *f

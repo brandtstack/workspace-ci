@@ -72,7 +72,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
             return self.reply(code, {"status": status, "deployment_uuid": "dep-1",
                                      "application": {"envs": [{"key": "X", "value": FX["PLANTED"]}]}})
         if self.path.startswith("/api/v1/applications/"):
-            return self.reply(s.get("app_code", 200), dict(Stub.app, docker_registry_image_tag=s.get("app_tag", VER), planted=FX["PLANTED"]))
+            return self.reply(s.get("app_code", 200), dict(Stub.app, docker_registry_image_tag=s.get("app_tag", VER),
+                                                           planted=FX["PLANTED"], **s.get("app_override", {})))
         if self.path.startswith("/api/v1/deploy"):
             if "deploy_code" in s:
                 return self.raw(s["deploy_code"], s["fail_body"])
@@ -148,6 +149,7 @@ def run(port, name, *, env=None, releases=None, fail=None, fail_once=None, scrip
              "GH_TOKEN": FX["GH_TOKEN"], "VER": VER, "WAIT": "true", "UUID": "app-1", "DEP": "dep-1",
              "BEARER": FX["BEARER"], "CFID": FX["CFID"], "CFSEC": FX["CFSEC"],
              "POLL_INTERVAL": "0", "POLL_TIMEOUT": "5", "RETRY_SLEEP": "0"}
+        e.update(yaml.safe_load(open(WORKFLOW))["jobs"]["release"].get("env", {}))   # as the runner would
         e.update(env or {})
         e = {k: v for k, v in e.items() if v is not None}
         path = os.path.join(base, "step.sh")
@@ -475,6 +477,25 @@ def rows(port):
         add("message-cap: %s caps a message at 300 characters without splitting one" % call,
             r["rc"] != 0 and "é" * 300 in r["out"] and "é" * 301 not in r["out"] and "�" not in r["out"], r["out"][:200])
         add("timeout: %s sets a curl --max-time" % call, "--max-time 30" in step(name, port))
+
+    # Every other Coolify-supplied value that reaches a log line, a Release or GITHUB_OUTPUT.
+    hostile = "v ##[add-mask]tok %0A::warning::x\n::notice::y"
+    clean = lambda out: "##[" not in out and "%0A" not in out and "\n::warning::" not in out and "\n::notice::" not in out
+    r = run(port, "Sync Coolify from build.yml", env={"FAMILY": "go", "TOOLCHAIN": "go"},
+            script={"app_override": {"ports_exposes": hostile}})
+    add("safe-log: a hostile read-back value is sanitised", r["rc"] != 0 and "ports_exposes" in r["out"] and clean(r["out"]), r["out"])
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"deployments": [(200, hostile), (200, "finished")]})
+    add("safe-log: a hostile polled status is sanitised", r["rc"] == 0 and clean(r["out"]), r["out"])
+    r = run(port, "Wait for the deployment and mark the Release", releases={VER: {"body": "⏳ deploying"}}, tag=VER,
+            script={"app_tag": hostile})
+    body = r["rel"].get(VER, {}).get("body", "")
+    add("safe-log: a hostile image tag is sanitised in the log and the Release",
+        r["rc"] == 0 and clean(r["out"]) and clean(body) and "superseded" in body, r["out"] + body)
+    for bad in ("dep-1\nevil=1", "../x", "", "dep 1"):
+        r = run(port, "Deploy", script={"deploy": {"deployments": [{"message": "q", "deployment_uuid": bad}]}})
+        add("safe-output: deployment_uuid %r is refused" % bad,
+            r["rc"] != 0 and "evil=1" not in r["output"] and "deployment_uuid=" not in r["output"], r["out"] + r["output"])
 
     r = run(port, "Deploy", script={"deploy": {"deployments": [
         {"message": "x ##[stop-commands]tok", "deployment_uuid": "dep-1"}]}})

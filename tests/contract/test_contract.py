@@ -329,6 +329,25 @@ class ContractTests(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
+    def test_validation_errors_cannot_carry_runner_commands(self):
+        d = tempfile.mkdtemp()
+        try:
+            for name, body in (("key-newline.yml", 'family: spa\nnode: "24"\n"a\\n::warning::x": 1\n'),
+                               ("key-command.yml", 'family: spa\nnode: "24"\n"x ##[add-mask]tok": 1\n'),
+                               ("value-newline.yml", 'family: spa\nnode: "24"\ncoolify-app: "a\\n::warning::x"\n'),
+                               ("value-command.yml", 'family: spa\nnode: "24"\ncoolify-app: "x ##[add-mask]tok"\n')):
+                f = os.path.join(d, name)
+                with open(f, "w") as fh:
+                    fh.write(body)
+                p, written = run(f, self.cache)
+                self.assertEqual(p.returncode, 1, p.stderr)
+                self.assertEqual(written, "")
+                self.assertNotIn("##[", p.stderr, name)
+                for line in p.stderr.strip().split("\n"):
+                    self.assertTrue(line.startswith("::error::build.yml: "), line)
+        finally:
+            shutil.rmtree(d)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

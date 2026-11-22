@@ -71,13 +71,28 @@ JSON="$("$YQ" -o=json '(.. | select(tag == "!!float" and (path | length) > 0)) |
 [ -n "$JSON" ] || JSON=null
 [ "$(printf '%s' "$JSON" | jq -s length)" -le 1 ] || die "<file>: more than one YAML document (only one is allowed)"
 
+# Text from build.yml reaches the runner's log parser only through this filter: `%` is escaped (the runner decodes
+# %0A in ::error:: text), control characters are removed (no second log line), and `##[` commands are broken up.
+JQ_SAFE='def safe: tostring | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #[");'
+
+# What a reader sees must be what the contract means. A merge key can override an earlier key, and yq drops or applies
+# it before validate.jq runs, so anchors, aliases and merge keys are refused anywhere, on values and on keys.
+SPECIAL="$("$YQ" '[(.. | select(kind == "alias" or anchor != "")),
+  (.. | select(kind == "map") | keys | .[] | select(kind == "alias" or anchor != "" or tag == "!!merge" or . == "<<"))] | length' \
+  "$FILE" 2>/dev/null)" || die "<file>: could not read the YAML structure"
+case "$SPECIAL" in
+  0) ;;
+  *) die "<file>: YAML anchors, aliases and merge keys are not allowed" ;;
+esac
+
 # yq keeps both entries of a repeated key and jq would take the last, so a later line could silently override an
-# earlier one. Selected by node kind, not tag, so a custom tag on the root map cannot skip the check. Key names have
-# `%` escaped (the runner decodes %0A in ::error:: text), and control characters and runner commands removed.
-DUPES="$("$YQ" -o=json -I=0 'select(kind == "map") | keys' "$FILE" 2>/dev/null | jq -r '
-  group_by(.) | map(select(length > 1) | .[0] | tostring | gsub("%"; "%25") | gsub("[[:cntrl:]]"; "") | gsub("##\\["; "# #["))
-  | .[] | "::error::build.yml: \(.): duplicate top-level key (only one is allowed)"')" \
-  || die "<file>: could not read the top-level keys"
+# earlier one. Every map is checked, selected by node kind so a custom tag cannot skip it.
+DUPES="$("$YQ" -o=json -I=0 '.. | select(kind == "map") | {"path": (path | join(".")), "keys": keys}' "$FILE" 2>/dev/null \
+  | jq -rs "$JQ_SAFE"'
+  .[] | .path as $p | .keys | group_by(.) | map(select(length > 1) | .[0] | tostring) | .[]
+  | if $p == "" then "::error::build.yml: \(safe): duplicate top-level key (only one is allowed)"
+    else "::error::build.yml: \("\($p).\(.)" | safe): duplicate key (only one is allowed)" end')" \
+  || die "<file>: could not read the keys"
 if [ -n "$DUPES" ]; then printf '%s\n' "$DUPES" >&2; exit 1; fi
 
 # default go-main name: the repo name, else the directory that contains .github/
@@ -87,7 +102,7 @@ else DEFNAME="$(basename "$(cd "$(dirname "$FILE")/.." && pwd)")"; fi
 RESULT="$(printf '%s' "$JSON" | jq -c --arg ws "$WS_ROOT" --arg defname "$DEFNAME" -f "$HERE/validate.jq")"
 
 if [ "$(printf '%s' "$RESULT" | jq 'has("errors")')" = true ]; then
-  printf '%s' "$RESULT" | jq -r '.errors[] | "::error::build.yml: " + gsub("%"; "%25")' >&2
+  printf '%s' "$RESULT" | jq -r "$JQ_SAFE"'.errors[] | "::error::build.yml: " + safe' >&2
   exit 1
 fi
 
