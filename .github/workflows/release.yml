@@ -303,7 +303,7 @@ jobs:
           code=$(call PATCH "$want")
           echo "settings PATCH -> ${code}"
           if [ "$code" != "200" ]; then
-            msg=$(jq -r '.message // empty' "$R" 2>/dev/null | head -c 300 || true)
+            msg=$(jq -r '(.message // empty) | strings' "$R" 2>/dev/null | tr -d '\000-\037' | head -c 300 || true)
             echo "::error::Coolify refused the settings PATCH (HTTP ${code}${msg:+: ${msg}}). 401/403 means COOLIFY_TOKEN cannot write applications. Nothing was promoted, tagged or deployed; a re-run retries."
             exit 1
           fi
@@ -432,7 +432,10 @@ jobs:
           # items and updates-or-creates each; it contains no delete/whereNotIn),
           # so this cannot disturb DATABASE_URL or the ACCESS_* vars.
           # Note the success status is 201, not 200.
-          code=$(curl -sS -o /tmp/env.json -w '%{http_code}' -X PATCH \
+          # The body can echo env values: only the HTTP code and a one-line .message are printed.
+          R="$RUNNER_TEMP/coolify-env.json"
+          trap 'rm -f "$R"' EXIT
+          code=$(curl -sS -o "$R" -w '%{http_code}' -X PATCH \
             -H "Authorization: Bearer ${BEARER}" \
             -H "CF-Access-Client-Id: ${CFID}" \
             -H "CF-Access-Client-Secret: ${CFSEC}" \
@@ -440,7 +443,11 @@ jobs:
             -d "{\"data\":[{\"key\":\"APP_VERSION\",\"value\":\"${VER}\",\"is_buildtime\":false,\"is_runtime\":true,\"is_preview\":false}]}" \
             "https://coolify.brandtstack.com/api/v1/applications/${UUID}/envs/bulk")
           echo "APP_VERSION upsert -> ${code}"
-          if [ "$code" != "200" ] && [ "$code" != "201" ]; then cat /tmp/env.json; exit 1; fi
+          if [ "$code" != "200" ] && [ "$code" != "201" ]; then
+            msg=$(jq -r '(.message // empty) | strings' "$R" 2>/dev/null | tr -d '\000-\037' | head -c 300 || true)
+            echo "::error::Coolify refused the APP_VERSION upsert (HTTP ${code}${msg:+: ${msg}})."
+            exit 1
+          fi
 
       - name: Point the Coolify application at ${{ steps.v.outputs.version }}
         if: steps.guard.outputs.skip == 'false' && inputs.publish-image && steps.target.outputs.uuid != ''
@@ -452,7 +459,9 @@ jobs:
           CFSEC:  ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
-          code=$(curl -sS -o /tmp/patch.json -w '%{http_code}' -X PATCH \
+          R="$RUNNER_TEMP/coolify-patch.json"
+          trap 'rm -f "$R"' EXIT
+          code=$(curl -sS -o "$R" -w '%{http_code}' -X PATCH \
             -H "Authorization: Bearer ${BEARER}" \
             -H "CF-Access-Client-Id: ${CFID}" \
             -H "CF-Access-Client-Secret: ${CFSEC}" \
@@ -460,7 +469,11 @@ jobs:
             -d "{\"docker_registry_image_tag\":\"${VER}\"}" \
             "https://coolify.brandtstack.com/api/v1/applications/${UUID}")
           echo "image tag PATCH -> ${code}"
-          if [ "$code" != "200" ]; then cat /tmp/patch.json; exit 1; fi
+          if [ "$code" != "200" ]; then
+            msg=$(jq -r '(.message // empty) | strings' "$R" 2>/dev/null | tr -d '\000-\037' | head -c 300 || true)
+            echo "::error::Coolify refused the image tag PATCH (HTTP ${code}${msg:+: ${msg}})."
+            exit 1
+          fi
 
       # The only step that touches production. A failure here leaves the git tag and the
       # registry correct. A re-run does NOT redeploy (see Resolve); trigger /deploy by hand.
@@ -474,17 +487,22 @@ jobs:
           CFSEC:  ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
-          code=$(curl -sS -o /tmp/deploy.json -w '%{http_code}' -X POST \
+          R="$RUNNER_TEMP/coolify-deploy.json"
+          trap 'rm -f "$R"' EXIT
+          code=$(curl -sS -o "$R" -w '%{http_code}' -X POST \
             -H "Authorization: Bearer ${BEARER}" \
             -H "CF-Access-Client-Id: ${CFID}" \
             -H "CF-Access-Client-Secret: ${CFSEC}" \
             "https://coolify.brandtstack.com/api/v1/deploy?uuid=${UUID}")
-          echo "deploy -> ${code}"
-          cat /tmp/deploy.json
-          if [ "$code" != "200" ]; then exit 1; fi
+          msg=$(jq -r '(.message // .deployments[0]?.message // empty) | strings' "$R" 2>/dev/null | tr -d '\000-\037' | head -c 300 || true)
+          echo "deploy -> ${code}${msg:+: ${msg}}"
+          if [ "$code" != "200" ]; then
+            echo "::error::Coolify refused the deploy (HTTP ${code}${msg:+: ${msg}})."
+            exit 1
+          fi
           echo "deployment queued for ${UUID}"
           echo "queued=true" >> "$GITHUB_OUTPUT"
-          dep=$(jq -r '.deployments[0].deployment_uuid // empty' /tmp/deploy.json)
+          dep=$(jq -r '.deployments[0].deployment_uuid // empty' "$R" 2>/dev/null || true)
           if [ -z "$dep" ]; then
             echo "::error::/deploy returned no deployment_uuid; cannot confirm the deploy."
             exit 1

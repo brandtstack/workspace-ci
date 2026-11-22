@@ -53,6 +53,12 @@ class Stub(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def raw(self, code, data):
+        self.send_response(code)
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         s = Stub.script
         if self.path.startswith("/api/v1/deployments/"):
@@ -68,6 +74,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/api/v1/applications/"):
             return self.reply(s.get("app_code", 200), dict(Stub.app, docker_registry_image_tag=s.get("app_tag", VER), planted=FX["PLANTED"]))
         if self.path.startswith("/api/v1/deploy"):
+            if "deploy_code" in s:
+                return self.raw(s["deploy_code"], s["fail_body"])
             return self.reply(200, s.get("deploy", {"deployments": [{"message": "queued", "deployment_uuid": "dep-1"}]}))
         self.reply(404, {})
 
@@ -78,6 +86,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
         Stub.patches.append(body)
         code = s.get("patch_code", 200)
+        if code != 200 and "fail_body" in s:
+            return self.raw(code, s["fail_body"])
         if code == 200:
             for k, v in body.items():
                 if k in s.get("drop", ()):
@@ -429,6 +439,36 @@ def rows(port):
     r = run(port, "Deploy")
     add("deploy-output: Deploy writes deployment_uuid to GITHUB_OUTPUT",
         r["rc"] == 0 and "deployment_uuid=dep-1" in r["output"], r["out"] + r["output"])
+
+    # A failing Coolify call prints the HTTP code and its message, never the body.
+    planted = FX["PLANTED"]
+    bodies = {
+        "json": (json.dumps({"message": "refused-msg", "data": [{"key": "X", "value": planted}]}).encode(), "refused-msg"),
+        "not-json": (("<html>" + planted + "</html>").encode(), None),
+        "message-is-object": (json.dumps({"message": {"value": planted}}).encode(), None),
+        "top-level-array": (json.dumps([{"value": planted}]).encode(), None),
+    }
+    calls = {
+        "env": ("Set APP_VERSION on the Coolify application", "patch_code"),
+        "tag": ("Point the Coolify application at ${{ steps.v.outputs.version }}", "patch_code"),
+        "deploy": ("Deploy", "deploy_code"),
+    }
+    for call, (name, key) in calls.items():
+        for kind, (body, msg) in bodies.items():
+            r = run(port, name, script={key: 422, "fail_body": body})
+            add("no-raw-body: %s on a %s failure prints the code%s and no body" % (call, kind, " and message" if msg else ""),
+                r["rc"] != 0 and "422" in r["out"] and planted not in r["out"] and (msg is None or msg in r["out"]), r["out"])
+            add("no-raw-body: %s leaves no response file after a %s failure" % (call, kind),
+                not [f for f in r["left"] if f.endswith(".json")], str(r["left"]))
+        r = run(port, name, script={key: 422, "fail_body": json.dumps({"message": "first\n::warning::injected"}).encode()})
+        add("no-raw-body: %s keeps a multi-line message on one log line" % call,
+            r["rc"] != 0 and "\n::warning::" not in r["out"], r["out"])
+
+    r = run(port, "Deploy", script={"deploy": {"deployments": [
+        {"message": "queued-msg", "resource_uuid": planted, "deployment_uuid": "dep-1"}]}})
+    add("deploy-message: a successful Deploy prints the message and nothing else from the body",
+        r["rc"] == 0 and "queued-msg" in r["out"] and planted not in r["out"]
+        and "deployment_uuid=dep-1" in r["output"], r["out"])
 
     return checks
 
