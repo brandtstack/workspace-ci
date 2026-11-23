@@ -200,15 +200,6 @@ class AppShape(unittest.TestCase):
         node = [l for l in b.splitlines() if "format('NODE=" in l][0]
         self.assertNotIn("custom", node)
 
-    def test_govulncheck_script_identical_to_go_ci(self):
-        # Until go-ci.yml is deleted, the two copies of the scan script must not drift.
-        with open(os.path.join(HERE, "..", "..", ".github", "workflows", "go-ci.yml")) as f:
-            go_ci = yaml.safe_load(f)
-        a = [s for s in go_ci["jobs"]["verify"]["steps"] if s.get("name") == "govulncheck"]
-        b = [s for s in steps("verify") if s.get("name") == "govulncheck"]
-        self.assertEqual((len(a), len(b)), (1, 1))
-        self.assertEqual(a[0]["run"], b[0]["run"])
-
     def test_internal_smoke_skips_go_images(self):
         # wget runs only in node images; go images exec their own healthcheck subcommand instead.
         wget = [s for s in steps("image") if "docker exec smoke wget" in s.get("run", "")]

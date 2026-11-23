@@ -12,8 +12,7 @@ actually read.
 
 | Workflow | Purpose |
 | --- | --- |
-| `node-ci.yml` | verify · optional Postgres integration · build + smoke + publish image |
-| `go-ci.yml` | same shape for Go services (no in-container smoke — distroless has no shell) |
+| `app.yml` | the build contract: reads `.github/build.yml`, then verify · optional Postgres integration · build + smoke + publish image |
 | `pr-title.yml` | conventional-commit check on the PR title |
 | `pr-review.yml` | one advisory Claude review comment per PR, authenticated by workload identity federation (no API key) |
 | `release.yml` | on merge to main: mint `vX.Y.Z`, promote the tested image, push the tag, create the GitHub Release, and (Coolify apps) deploy and mark it Latest once live |
@@ -23,56 +22,28 @@ actually read.
 Every `workflow_call` input, read from the workflow files (the source of truth). All are optional.
 Booleans are real booleans in YAML; `runner` and the string inputs are quoted strings.
 
-### `node-ci.yml` (15)
+### `app.yml` (2)
+
+Everything else comes from the caller's `.github/build.yml` (see *App contract*).
 
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
-| `node-version` | string | `'24'` | Node version for `setup-node` in `verify` and `integration` |
-| `working-directory` | string | `'.'` | Directory for `npm ci`/`verify`/`verify:integration`, the lockfile cache path, and the Docker build context |
-| `needs-postgres` | boolean | `false` | Run the `integration` job: a `postgres:16.15-alpine` service, `DATABASE_URL` set, then `npm run verify:integration`. When `false` the job is skipped |
-| `postgres-db` | string | `'test'` | Database name created in the Postgres service and used in `DATABASE_URL` |
-| `smoke` | boolean | `true` | Boot the built image and curl `smoke-path` on the published port before pushing |
-| `smoke-port` | string | `'80'` | Container port the app listens on (published to host `8080`) |
-| `smoke-path` | string | `'/'` | Path requested by the smoke checks |
-| `smoke-internal` | boolean | `true` | Also `wget` `127.0.0.1:<smoke-port>` from inside the container (catches a server bound only to the container IP). Only runs when `smoke` is `true` |
-| `smoke-run-args` | string | `''` | Extra arguments to `docker run` for the smoke container (e.g. `-e` vars) |
-| `docker-build-args` | string | `''` | Newline-separated `build-args` for the image build |
-| `dockerfile` | string | `''` | Dockerfile path relative to the checkout root. Empty falls back to `{working-directory}/Dockerfile` (see *A non-default Dockerfile*) |
-| `private-registry` | boolean | `false` | Wire the `@brandtstack` GitHub Packages registry into `npm ci` (all jobs) and the image build (as a BuildKit secret, not a build-arg), using the caller's `GITHUB_TOKEN`. No PAT |
-| `publish-image` | boolean | `true` | Run the `image` job (PR only): build, smoke, push `ghcr.io/<repo>:sha-<head>`. Set `false` for repos that do not deploy a registry image |
 | `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` (see *Running on the self-hosted runner*) |
-| `favicon` | string | `''` | Newline-separated favicon paths, passed verbatim to [`brandtstack/tabcheck`](https://github.com/brandtstack/tabcheck) in the `verify` job after `npm run verify`. Empty skips the check. Paths are relative to the **checkout root**, even when `working-directory` is set |
+| `path` | string | `'.'` | The app root: its `.github/build.yml` is the contract, and it is the image build context |
 
-### `go-ci.yml` (11)
-
-Runs `make verify` (and `make verify-integration` when `needs-postgres`) instead of npm scripts.
-
-After `make verify`, the `verify` job runs **`govulncheck` (pinned `v1.9.0`) on every tracked
-`go.mod`**, with the latest patch of `go-version` (`check-latest`). It deliberately does not use the
+For a Go app, after `make verify` the `verify` job runs **`govulncheck` (pinned `v1.9.0`) on every tracked
+`go.mod`**, with the latest patch of the contract's Go version (`check-latest`). It deliberately does not use the
 runner's cached patch: govulncheck judges the stdlib of the Go on `PATH`, and the images build
-`FROM golang:<go-version>-alpine`, which is always the latest patch. A reachable vulnerability (exit 3)
+`FROM golang:<go>-alpine`, which is always the latest patch. A reachable vulnerability (exit 3)
 or a scanner error **fails every event except a push**, and on a push only **warns**, so it never
 strands a release (`release` needs `ci`). The same holds when the scanner cannot be set up at all (no
-Go manifest, no module proxy): on a push both steps are `continue-on-error`. There is no input to
+Go manifest, no module proxy): on a push both steps are `continue-on-error`. There is no key to
 turn it off. The built binary is kept in the runner tool cache per scanner version + Go patch (a cold
-build is ~35-100 s on the Acer; a cache hit makes the whole step ~8 s). A cache hit is trusted by
-path: on the Acer that volume is shared by every repo, which is accepted because all of them are
-private and Adrian's, as for the Go toolchain cached in the same volume. Offline tests:
-`tests/go-ci/test_govulncheck.py`.
+build is ~35-100 s; a cache hit makes the whole step ~8 s). A cache hit is trusted by path: on a
+self-hosted runner that volume is shared by every repo, which is accepted only because they all have
+the same owner, as for the Go toolchain cached in the same volume. Offline tests:
+`tests/app/test_govulncheck.py`.
 
-| Input | Type | Default | What it does |
-| --- | --- | --- | --- |
-| `go-version` | string | `'1.27'` | Go version for `setup-go` |
-| `node-version` | string | `'24'` | Node version installed alongside Go in `verify` and `integration` |
-| `needs-postgres` | boolean | `false` | Run the `integration` job against a Postgres service (`DATABASE_URL` carries `?sslmode=disable`) |
-| `postgres-db` | string | `'test'` | Database name for that service |
-| `smoke` | boolean | `true` | Boot the image and curl `smoke-path` on the published port. No in-container check (distroless has no shell) |
-| `smoke-port` | string | `'80'` | Container port the app listens on (published to host `8080`) |
-| `smoke-path` | string | `'/'` | Path requested by the smoke check |
-| `smoke-run-args` | string | `''` | Extra arguments to `docker run` for the smoke container |
-| `docker-build-args` | string | `''` | Newline-separated `build-args` for the image build |
-| `publish-image` | boolean | `true` | Run the `image` job (PR only): build, smoke, push `:sha-<head>`. Build context is always `.` and the Dockerfile is `./Dockerfile` |
-| `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
 
 ### `pr-title.yml` (1)
 
@@ -103,7 +74,7 @@ credentials: `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`,
 
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
-| `publish-image` | boolean | `true` | Must match the caller's `node-ci`/`go-ci` setting. `false` mints the git tag only, with no registry work |
+| `publish-image` | boolean | `true` | `false` mints the git tag only, with no registry work. `app.yml` always publishes `:sha-<head>`, so its callers leave this on |
 | `coolify-app-uuid` | string | `''` | Coolify application uuid. Empty means no deploy is attempted (see *Deploying to Coolify*). Only acts when `publish-image` is also `true` |
 | `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
 
@@ -127,13 +98,10 @@ concurrency:
 
 jobs:
   ci:
-    uses: brandtstack/workspace-ci/.github/workflows/node-ci.yml@main
+    uses: brandtstack/workspace-ci/.github/workflows/app.yml@main
     permissions:
       contents: read
       packages: write        # required to publish to GHCR
-    with:
-      smoke-port: '80'
-      smoke-path: '/'
 
   pr-title:
     if: github.event_name == 'pull_request'
@@ -279,25 +247,9 @@ Tests: `python3 tests/pr-review/test_pr_review.py` (fake `gh`, stub API on `127.
 and `jq` wrapped to catch a credential in argv; nothing leaves the machine). `tests.yml` runs them
 on every PR, on GitHub-hosted runners only.
 
-### A non-default Dockerfile
-
-`node-ci.yml` takes a **`dockerfile:`** input (path relative to the checkout root). Leave it unset
-and the build falls back to `{context}/Dockerfile` as before — the empty default is not passed
-through, so callers that do not set it are unaffected.
-
-```yaml
-    with:
-      publish-image: true
-      dockerfile: deploy/Dockerfile
-```
-
-Added 2026-09-01 for `access-panel`, whose Dockerfile lives at `deploy/Dockerfile`. Without it there
-was no way to point CI at a non-default path, so that repo could not publish an image and was the
-last app Coolify still built from source.
-
 ### Running on the self-hosted runner (private repos only)
 
-All five workflows take a **`runner:`** input — JSON for `runs-on`, default `'"ubuntu-latest"'`
+All four workflows take a **`runner:`** input — JSON for `runs-on`, default `'"ubuntu-latest"'`
 (GitHub-hosted). Private brandtstack repos opt in to the one-job, Sysbox-isolated runners on the Acer
 by passing it to **every** job, `release` included:
 
@@ -311,17 +263,16 @@ hardware. This repo is public and never sets it; the launcher also refuses any j
 Fallback if the Acer is down: set it back to `'"ubuntu-latest"'` (spends Actions minutes).
 Operations: `priv/infra/reference/ci-runner.md`.
 
-⚠️ **`publish-image` must match between the `ci` and `release` jobs.** `ci` alone leaves `release`
-with no artifact to promote; `release` alone fails after CI has already passed.
+⚠️ **`release` promotes the `:sha-<head>` image that `ci / image` published.** `app.yml` always publishes it, so a
+caller leaves `release`'s `publish-image` input on.
 
 ⚠️ Keep `.dockerignore` at the **repo root** — it is honored for a build whose context is the repo
 root even when the Dockerfile is in a subdirectory. A `deploy/.dockerignore` is silently ignored.
 
 ## App contract (`app.yml`)
 
-**Adopted by the three pilots (spec step 3, 2026-11-18):** tilde (`spa`), cc-usage (`go`) and insta-web
-(`next`), each with `release` in contract mode. The rest of the fleet still calls `node-ci.yml` / `go-ci.yml`
-until spec step 4.
+Every caller uses this workflow. The older `node-ci.yml` and `go-ci.yml` are gone from `main`; a caller still pinned
+to a commit that has them keeps working, but must not take a digest bump past their removal.
 
 One file, `.github/build.yml` in the app repo, is the whole build configuration. `app.yml` reads it with
 `contract/read.sh` and runs `verify`, `integration` and `image` from it. The keys and their rules are in
@@ -519,9 +470,8 @@ So the repo page's **Latest** badge is the version Coolify confirmed. A tag-only
   `pr-title / lint` — not `verify` / `image` / `pr-title`. A name that never
   reports blocks every PR permanently.
   ⚠️ **Never require a check that can skip.** `ci / integration` is skipped
-  wherever `needs-postgres: false`, and a skipped job never reports — require it only
-  on repos that actually run it. Likewise `ci / image` on a repo with
-  `publish-image: false`. This repo runs only its own `tests` workflow on
+  wherever the contract has `integration: false`, so require it only on repos
+  that actually run it. This repo runs only its own `tests` workflow on
   GitHub-hosted runners, and its ruleset requires a PR with **no** status check.
 - Branch protection needs GitHub Team on private repos; Free enforces rulesets
   on public repos only.
@@ -566,6 +516,6 @@ The shared preset (`default.json`) folds `digest`, `pin` and `pinDigest` updates
 | `eslint` | `<10` where already on 9 | eslint-plugin-react errors on ESLint 10 |
 | `@babel/plugin-transform-runtime` | no major | consumers pin 7.29.7 via `overrides`; v8 drops that guard, then the next install ERESOLVEs |
 
-This repo's own `renovate.json` also parks the `postgres` docker major (go-ci integration service
+This repo's own `renovate.json` also parks the `postgres` docker major (`app.yml`'s integration service
 stays on 16 to match prod `personal-postgres`, per `infra/reference/kvm4-platform.md`, a doc, not
 the live container).

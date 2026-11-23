@@ -13,8 +13,8 @@ name: release
 on:
   workflow_call:
     inputs:
-      # Must match the caller's node-ci/go-ci setting. When false, only the git
-      # tag is minted and no registry work happens.
+      # When false, only the git tag is minted and no registry work happens.
+      # app.yml always publishes :sha-<head>, so its callers leave this on.
       publish-image: { type: boolean, default: true }
       # Coolify application uuid. When empty (the default) no deploy is
       # attempted and this workflow behaves exactly as it did before —

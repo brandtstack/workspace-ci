@@ -6,7 +6,7 @@
       "description": "Keep every copy of the govulncheck pin on one version: the reusable workflows and the README. The test reads the pin from the workflow.",
       "customType": "regex",
       "managerFilePatterns": [
-        "/^\\.github/workflows/(app|go-ci)\\.yml$/",
+        "/^\\.github/workflows/app\\.yml$/",
         "/^README\\.md$/"
       ],
       "matchStrings": [

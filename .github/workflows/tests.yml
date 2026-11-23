@@ -26,12 +26,12 @@ jobs:
       - name: Offline tests for release.yml's Release steps
         run: |
           "$RUNNER_TEMP/venv/bin/python" tests/release/test_release.py
-      - name: Offline tests for go-ci.yml's govulncheck steps
+      - name: Offline tests for app.yml's govulncheck steps
         run: |
-          "$RUNNER_TEMP/venv/bin/python" tests/go-ci/test_govulncheck.py
-      - name: Offline tests for node-ci.yml's favicon input
+          "$RUNNER_TEMP/venv/bin/python" tests/app/test_govulncheck.py
+      - name: Offline tests for app.yml's favicon step
         run: |
-          "$RUNNER_TEMP/venv/bin/python" tests/node-ci/test_favicon.py
+          "$RUNNER_TEMP/venv/bin/python" tests/app/test_favicon.py
       - name: Tests for the build.yml contract reader
         run: |
           "$RUNNER_TEMP/venv/bin/python" tests/contract/test_contract.py

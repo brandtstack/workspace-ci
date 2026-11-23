@@ -32,7 +32,7 @@ on:
       runner: { type: string, default: '"ubuntu-latest"' }
       # The app root: <path>/.github/build.yml is the contract, verify and integration run in it, it is
       # the image build context, and a `custom` dockerfile is <path>/<dockerfile>. Apps leave it at '.';
-      # the fixtures use it. favicon paths stay relative to the CHECKOUT ROOT (as in node-ci), not <path>.
+      # the fixtures use it. favicon paths stay relative to the CHECKOUT ROOT, not <path>.
       path:   { type: string, default: '.' }
 
 permissions:
@@ -146,7 +146,7 @@ jobs:
         if: steps.contract.outputs.node != ''
         run: npm run verify
 
-      # --- go toolchain: go, custom with `go` (steps copied from go-ci.yml) ---
+      # --- go toolchain: go, custom with `go` ---
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: steps.contract.outputs.go != ''
         with:
@@ -193,7 +193,7 @@ jobs:
 
       # Every module under <path> (git ls-files, so a nested server/go.mod counts). Exit 3 means a
       # reachable vuln; any other non-zero exit is a scanner error. Both fail, except on a push.
-      # Offline rows: tests/go-ci/test_govulncheck.py (against go-ci.yml, where this block is the original).
+      # Offline rows: tests/app/test_govulncheck.py.
       - name: govulncheck
         if: steps.contract.outputs.go != '' && steps.vulngo.outcome == 'success'
         continue-on-error: ${{ github.event_name == 'push' }}
