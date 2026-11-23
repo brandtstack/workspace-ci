@@ -5,7 +5,7 @@
 # CLI output, and a failing container's or task's output lands in durable Coolify logs. So: a silent precheck first, and only a
 # passing precheck reaches the real run. Failure prints one fixed line of ours, nothing else.
 # Both runs use the same flags: no cloud (Armor), OS keychain or password-manager key lookup, ever.
-# Origin: brl-intraweb's wrapper (R45).
+# Origin: an app repo's wrapper.
 DX=/usr/local/bin/dotenvx
 
 if ! "$DX" run --strict -f .env.production --no-armor --no-native --no-1password --no-bitwarden -- true >/dev/null 2>&1; then

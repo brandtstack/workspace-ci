@@ -10,7 +10,7 @@ name: app
 # ${{ job.workflow_repository }} at ${{ job.workflow_sha }} into .ws-ci and moves it to $RUNNER_TEMP/ws-ci, in every job that needs them,
 # after a step that fails if either value is empty. NEVER fall back to main.
 # Evidence (spike 5.1, 2026-11-18, throwaway reusable workflow called from a private repo on the Acer,
-# once pinned by SHA and once by branch; ci-launcher runs 44279643236 and 44279773156):
+# once pinned by SHA and once by branch):
 #   job.workflow_sha         the pinned SHA / the branch head SHA            <- used
 #   job.workflow_repository  brandtstack/workspace-ci                        <- used
 #   github.job_workflow_sha  empty (the context does not exist)
@@ -20,7 +20,7 @@ name: app
 # `smoke-args` is word-split into `docker run` flags (no spaces inside one argument) and is as trusted as
 # the caller's own CI code.
 # A same-repo local call (uses: ./.github/workflows/app.yml) resolves to the run's own commit:
-# job.workflow_sha == github.sha (ci-launcher runs 44289692203 and 44286543151); the 'Check the workflow ref'
+# job.workflow_sha == github.sha (two private-repo runs); the 'Check the workflow ref'
 # step asserts it on every run.
 
 on:
@@ -152,7 +152,7 @@ jobs:
         with:
           go-version: ${{ steps.contract.outputs.go }}
           # The Acer's toolcache holds an older patch than the golang:<go-version>-alpine images
-          # build with (go1.27.1 vs 1.27.3, 2026-11-09); test on the patch that ships (ops#36 row 2).
+          # build with (go1.27.1 vs 1.27.3, 2026-11-09); test on the patch that ships.
           check-latest: true
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: steps.contract.outputs.go != ''
@@ -202,7 +202,7 @@ jobs:
           ENFORCE: ${{ github.event_name != 'push' }}
         run: |
           set -euo pipefail
-          # Building govulncheck from cold took ~104 s of a 112 s step (bcli, Acer, 2026-11-09); the
+          # Building govulncheck from cold took ~104 s of a 112 s step (a Go repo, 2026-11-09); the
           # scan itself ~7 s. So keep the binary in the runner tool cache (on the Acer, the shared
           # ci-toolcache volume), keyed by scanner version + exact Go patch: built once per release.
           # Build in a temp dir beside the target (same filesystem, so the mv is an atomic rename):
@@ -210,7 +210,7 @@ jobs:
           # ⚠️ Trust: a cache hit is trusted by path. Any job on the Acer can write this volume, so
           # one repo's PR code could plant a binary another repo then runs. Accepted, as for the Go
           # toolchain setup-go caches in the same volume: every repo on this runner is private and
-          # Adrian's (infra/reference/ci-runner.md). A checksum kept on the same volume adds nothing.
+          # Adrian's (private runner docs). A checksum kept on the same volume adds nothing.
           root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/govulncheck"
           bin="$root/${GOVULNCHECK_VERSION}-$(go env GOVERSION)"
           tmp=""
@@ -310,7 +310,7 @@ jobs:
         with:
           go-version: ${{ needs.verify.outputs.go }}
           # The Acer's toolcache holds an older patch than the golang:<go-version>-alpine images
-          # build with (go1.27.1 vs 1.27.3, 2026-11-09); test on the patch that ships (ops#36 row 2).
+          # build with (go1.27.1 vs 1.27.3, 2026-11-09); test on the patch that ships.
           check-latest: true
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: needs.verify.outputs.go != ''
@@ -323,7 +323,7 @@ jobs:
   # Warn only, PRs only, and nothing needs it: Renovate's osvVulnerabilityAlerts (default.json) covers direct
   # dependencies only, so this keeps the whole-lockfile signal without holding up `image` (which needs only
   # verify) or the push path (release needs the whole `ci` call, and this job is skipped on push). Inside verify,
-  # waiting for it cost up to 45 s before `image` could start (tend-api; build-time cuts plan, Task 4 record).
+  # waiting for it cost up to 45 s before `image` could start (measured on a private repo).
   # PR-only ON PURPOSE: on push, release needs the whole `ci` call, so an audit job there would bring the wait
   # back onto the release path. Accepted gap: an advisory published between a PR's last run and its merge shows
   # on the repo's next PR, not on the merge run (panel review on workspace-ci#32).
@@ -457,7 +457,7 @@ jobs:
         env:
           NPM_TOKEN: ${{ needs.verify.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
           # A FIXED epoch, not the commit time: with the commit time every PR moves the clamp and every layer the
-          # build writes gets a new digest again (probe: 7 of 16 tilde layers changed with only the epoch moved).
+          # build writes gets a new digest again (probe: 7 of 16 layers of one app changed with only the epoch moved).
           # It also becomes the image config's `created` (2026-01-01T00:00:00Z); nothing in this repo reads that. The
           # real build time travels as the org.opencontainers.image.created label (config only, no layer changes).
           SOURCE_DATE_EPOCH: '1767225600'

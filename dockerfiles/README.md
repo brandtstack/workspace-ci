@@ -55,8 +55,7 @@ The repo must provide:
   - **Credentials and environment.** The migration runs with `PATH`, `HOME`, `CHECKPOINT_DISABLE` and
     `DATABASE_URL` only, never the app's other secrets. Set `MIGRATE_DATABASE_URL` to give the migration a
     schema-owner role while the server's `DATABASE_URL` stays a least-privilege one; `start.sh` unsets it before
-    the server starts. Without it, the server's own `DATABASE_URL` must be able to run DDL (a single role,
-    as insta-web has).
+    the server starts. Without it, the server's own `DATABASE_URL` must be able to run DDL (a single role).
   - **Logs.** Prisma's own output is not printed (it names hosts and databases). The log gets fixed `[start]`
     lines, the `Applying migration`, `No pending migrations` and `All migrations` lines, and on failure only
     the exit code and Prisma's error code (for example `P3009`).
@@ -83,12 +82,12 @@ The repo must provide `nginx.conf` (a `server` block, copied to `conf.d/default.
 copied to `/etc/nginx/snippets/`, but the shared `healthz.conf` is copied after it and always wins over an app file of that name. The shipped main `nginx.conf` has no `user` directive and keeps the
 pid and temp files in `/tmp`; binding 80 as non-root relies on `ip_unprivileged_port_start=0`.
 
-Two optional subdirectories of `nginx/` handle values known only at start (tilde's `/health` version):
+Two optional subdirectories of `nginx/` handle values known only at start (such as a `/health` version):
 - `nginx/entrypoint.d/*.sh` are copied to `/docker-entrypoint.d/` (mode 0755). The stock entrypoint runs
   them as `nginx` before nginx starts and **aborts, so nginx never starts, if one exits non-zero**: a hook
   must always `exit 0`. Every file there is copied executable, so put only hooks in it.
 - **A hook writes config that nginx `include`s, so it must write only values it has validated**
-  (an allow-list of characters, as tilde's `10-app-version.sh` does with `tr -cd 'A-Za-z0-9._+-'`):
+  (an allow-list of characters, for example a `10-app-version.sh` using `tr -cd 'A-Za-z0-9._+-'`):
   no quotes, semicolons, braces or newlines from the environment. `/etc/nginx/runtime/` is writable by
   the serving user in every spa image; this is the accepted cost of start-time values.
 - `/etc/nginx/runtime/` is owned by `nginx` and is the only writable config path. `nginx/runtime/` holds
