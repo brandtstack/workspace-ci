@@ -263,8 +263,8 @@ hardware. This repo is public and never sets it; the launcher also refuses any j
 Fallback if the Acer is down: set it back to `'"ubuntu-latest"'` (spends Actions minutes).
 Operations: `priv/infra/reference/ci-runner.md`.
 
-⚠️ **`release` promotes the `:sha-<head>` image that `ci / image` published.** With `publish-image: false` it mints
-the git tag only.
+⚠️ **`release` promotes the `:sha-<head>` image that `ci / image` published.** `app.yml` always publishes it, so a
+caller leaves `release`'s `publish-image` input on.
 
 ⚠️ Keep `.dockerignore` at the **repo root** — it is honored for a build whose context is the repo
 root even when the Dockerfile is in a subdirectory. A `deploy/.dockerignore` is silently ignored.
@@ -470,9 +470,8 @@ So the repo page's **Latest** badge is the version Coolify confirmed. A tag-only
   `pr-title / lint` — not `verify` / `image` / `pr-title`. A name that never
   reports blocks every PR permanently.
   ⚠️ **Never require a check that can skip.** `ci / integration` is skipped
-  wherever `needs-postgres: false`, and a skipped job never reports — require it only
-  on repos that actually run it. Likewise `ci / image` on a repo with
-  `publish-image: false`. This repo runs only its own `tests` workflow on
+  wherever the contract has `integration: false`, so require it only on repos
+  that actually run it. This repo runs only its own `tests` workflow on
   GitHub-hosted runners, and its ruleset requires a PR with **no** status check.
 - Branch protection needs GitHub Team on private repos; Free enforces rulesets
   on public repos only.
