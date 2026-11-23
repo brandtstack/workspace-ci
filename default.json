@@ -29,6 +29,13 @@
       "enabled": false
     },
     {
+      "description": "Temporary hold: no automatic bumps of this repo's workflow pins while a release.yml change is proven on one real release. Callers move by hand meanwhile, including for any security fix to a workflow. `pin` and `pinDigest` stay on, so a caller on a mutable ref still gets pinned. Remove only this rule once that release has passed: the pr-review.yml exclusion above is permanent.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["brandtstack/workspace-ci"],
+      "matchUpdateTypes": ["digest", "major", "minor", "patch"],
+      "enabled": false
+    },
+    {
       "matchDepTypes": ["devDependencies"],
       "automerge": true
     },
