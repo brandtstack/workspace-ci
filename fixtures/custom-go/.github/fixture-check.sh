@@ -6,7 +6,10 @@ set -euo pipefail
 base="${1:?base url}"
 [ "$(curl -fsS "$base/dbs")" = "one,two" ] || { echo "fixture-check: /dbs is not 'one,two'" >&2; exit 1; }
 echo "fixture-check: both smoke databases answered"
-if docker logs smoke 2>&1 | grep -q 'did not answer'; then
+# Capture first: under pipefail, grep -q closing the pipe early kills docker logs (SIGPIPE), and here that
+# would turn a real match into a pass.
+logs="$(docker logs smoke 2>&1)"
+if grep -q 'did not answer' <<<"$logs"; then
   echo "fixture-check: a database ping failed" >&2
   exit 1
 fi
