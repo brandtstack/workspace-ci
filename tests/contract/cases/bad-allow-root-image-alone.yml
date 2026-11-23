@@ -1,0 +1,5 @@
+# expect: allow-root-image: requires skip-image-checks: true
+family: custom
+dockerfile: Dockerfile
+node: "24"
+allow-root-image: true

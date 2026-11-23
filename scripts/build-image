@@ -112,6 +112,8 @@ ARGS+=("$DIR")
 podman "${ARGS[@]}" || die "podman build failed"
 
 [ "$SMOKE" = 1 ] || { echo "built $TAG"; exit 0; }
+# As app.yml: skip-image-checks images cannot boot here, so the build is the whole check.
+[ "$C_skip_image_checks" != true ] || { echo "built $TAG (skip-image-checks: not booted)"; exit 0; }
 
 # --- smoke -----------------------------------------------------------------------------------------------
 PORT="${BUILD_IMAGE_PORT:-8080}"

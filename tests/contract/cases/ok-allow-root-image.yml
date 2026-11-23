@@ -1,0 +1,5 @@
+family: custom
+dockerfile: Dockerfile
+node: "24"
+skip-image-checks: true
+allow-root-image: true

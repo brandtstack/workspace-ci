@@ -65,6 +65,8 @@ jobs:
       smoke-env-b64:    ${{ steps.contract.outputs.smoke-env-b64 }}
       smoke-postgres:   ${{ steps.contract.outputs.smoke-postgres }}
       smoke-random:     ${{ steps.contract.outputs.smoke-random }}
+      skip-image-checks: ${{ steps.contract.outputs.skip-image-checks }}
+      allow-root-image: ${{ steps.contract.outputs.allow-root-image }}
     defaults:
       run:
         working-directory: ${{ inputs.path }}
@@ -476,7 +478,10 @@ jobs:
           # (ci-runner:0.1.2, Sysbox, 2026-11-21): two cold builds gave the same 16 digests, and the push kept them.
           outputs: type=docker,rewrite-timestamp=true,unpack=false
           tags: ci-image:local
-          labels: org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+          # The second label marks an image whose boot checks were skipped: release.yml refuses to deploy it to Coolify.
+          labels: |
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            ${{ needs.verify.outputs.skip-image-checks == 'true' && 'workspace-ci.image-checks-skipped=true' || '' }}
           # No attestations: on a daemon with the containerd image store (the Acer and ubuntu-latest both are), the
           # docker driver would keep them and `docker push` would publish an index with an unknown/unknown entry.
           # Off, the pushed image stays one amd64 manifest whatever the store, as it was under docker-container.
@@ -497,18 +502,34 @@ jobs:
           secret-envs: ${{ needs.verify.outputs.private-registry == 'true' && 'npm_token=NPM_TOKEN' || '' }}
 
       # D4 for every app: the image runs as a non-root user and exposes exactly port 80.
+      # skip-image-checks (custom images outside Coolify that cannot boot in CI) turns off the port check here and
+      # the boot and health steps below. The non-root check needs no boot, so it stays on unless the contract also
+      # says allow-root-image. The build above and the publish at the end still run.
       - name: Image contract (non-root user, exposed port 80)
+        env:
+          SKIP_IMAGE_CHECKS: ${{ needs.verify.outputs.skip-image-checks }}
+          ALLOW_ROOT_IMAGE: ${{ needs.verify.outputs.allow-root-image }}
         run: |
           set -euo pipefail
           user="$(docker image inspect --format '{{.Config.User}}' ci-image:local)"
           ports="$(docker image inspect --format '{{json .Config.ExposedPorts}}' ci-image:local)"
           echo "Config.User=${user} Config.ExposedPorts=${ports}"
           case "$user" in
-            ""|0|root|0:*|root:*) echo "::error::image runs as root (Config.User='${user}')"; exit 1 ;;
+            ""|0|root|0:*|root:*)
+              if [ "$ALLOW_ROOT_IMAGE" = true ]; then
+                echo "::warning::image runs as root (Config.User='${user}'), allowed by allow-root-image"
+              else
+                echo "::error::image runs as root (Config.User='${user}')"
+                exit 1
+              fi ;;
           esac
-          if [ "$ports" != '{"80/tcp":{}}' ]; then
+          if [ "$SKIP_IMAGE_CHECKS" != true ] && [ "$ports" != '{"80/tcp":{}}' ]; then
             echo "::error::image must expose exactly 80/tcp, got ${ports}"
             exit 1
+          fi
+          # The check name stays `ci / image`, so say on the run page what it did not prove.
+          if [ "$SKIP_IMAGE_CHECKS" = true ]; then
+            echo "**Image checks skipped by build.yml:** port, boot and health. Root allowed: ${ALLOW_ROOT_IMAGE}." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
           fi
 
       # smoke-env / smoke-random (contract): one --env-file for the smoke container, mode 600, never printed.
@@ -565,6 +586,7 @@ jobs:
           echo "smoke Postgres ready: $SMOKE_PG"
 
       - name: Boot and smoke test
+        if: needs.verify.outputs.skip-image-checks != 'true'
         env:
           SMOKE_ARGS: ${{ needs.verify.outputs.smoke-args }}
           SMOKE_PG: ${{ needs.verify.outputs.smoke-postgres }}
@@ -606,7 +628,7 @@ jobs:
       # Not for go images: distroless has no shell and no wget. Their in-container check is the next step,
       # which execs the app binary itself.
       - name: Smoke test from INSIDE the container
-        if: needs.verify.outputs.node != ''
+        if: needs.verify.outputs.node != '' && needs.verify.outputs.skip-image-checks != 'true'
         run: |
           set -euo pipefail
           # This is the check that catches the Next standalone $HOSTNAME bug:
@@ -643,7 +665,7 @@ jobs:
       # it must declare a HEALTHCHECK (Coolify's check is off for go, so this is the only one) and the smoke
       # container must reach healthy under it, within a budget sized from that HEALTHCHECK (scripts/wait-healthy).
       - name: Custom go image HEALTHCHECK
-        if: needs.verify.outputs.family == 'custom' && needs.verify.outputs.go != ''
+        if: needs.verify.outputs.family == 'custom' && needs.verify.outputs.go != '' && needs.verify.outputs.skip-image-checks != 'true'
         run: |
           set -euo pipefail
           test_cmd="$(docker image inspect --format '{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Test}}{{end}}' ci-image:local)"
@@ -721,8 +743,8 @@ jobs:
           HEAD:  ${{ steps.meta.outputs.head }}
         run: |
           set -euo pipefail
-          # docker tag, not a second build: the pushed bytes are exactly the
-          # image the smoke steps just exercised.
+          # docker tag, not a second build: the pushed bytes are exactly the image
+          # the smoke steps just exercised (with skip-image-checks, the image built above).
           docker tag ci-image:local "${IMAGE}:sha-${HEAD}"
           docker push "${IMAGE}:sha-${HEAD}"
           echo "published ${IMAGE}:sha-${HEAD}"

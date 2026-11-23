@@ -332,6 +332,13 @@ class BuildImage(unittest.TestCase):
         self.assertIn("-p 127.0.0.1:9091:80", self.argv(self.calls("podman", "run")[0]))
         self.assertIn("127.0.0.1:9091/healthz", self.argv(self.calls("curl")[0]))
 
+    def test_skip_image_checks_builds_but_does_not_boot(self):
+        r = self.run_bi("--no-verify", self.repo("ok-skip-image-checks"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.calls("podman", "build")), 1)
+        self.assertEqual(self.calls("podman", "run"), [])
+        self.assertEqual(self.calls("curl"), [])
+
     def test_no_smoke(self):
         r = self.run_bi("--no-verify", "--no-smoke", self.repo("ok-spa-min"))
         self.assertEqual(r.returncode, 0, r.stderr)

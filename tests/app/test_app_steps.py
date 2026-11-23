@@ -26,7 +26,13 @@ with open(WORKFLOW) as f:
 FAKE_DOCKER = r"""#!/usr/bin/env bash
 echo "$*" >> "$FAKE/calls"
 case "$1 $2" in
-  "image inspect") cat "$FAKE/hc_test" 2>/dev/null; exit 0 ;;
+  "image inspect")
+    case "$*" in
+      *Config.User*) cat "$FAKE/user" 2>/dev/null ;;
+      *ExposedPorts*) cat "$FAKE/ports" 2>/dev/null ;;
+      *) cat "$FAKE/hc_test" 2>/dev/null ;;
+    esac
+    exit 0 ;;
 esac
 case "$1" in
   inspect)
@@ -118,6 +124,48 @@ class SmokeEnvFile(unittest.TestCase):
     def test_empty_inputs_make_an_empty_file(self):
         p, _, content, mode = run_step(self.N, {"SMOKE_ENV_B64": "", "SMOKE_RANDOM": ""})
         self.assertEqual((p.returncode, content, mode), (0, b"", 0o600), p.stderr)
+
+
+class ImageContract(unittest.TestCase):
+    N = "Image contract (non-root user, exposed port 80)"
+    PORT_80 = '{"80/tcp":{}}\n'
+    PORT_8090 = '{"8090/tcp":{}}\n'
+
+    def check(self, user, ports, skip="false", allow="false"):
+        return run_step(self.N, {"SKIP_IMAGE_CHECKS": skip, "ALLOW_ROOT_IMAGE": allow},
+                        fake={"user": user, "ports": ports})[0]
+
+    def test_a_normal_image_passes(self):
+        p = self.check("node\n", self.PORT_80)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_root_fails_with_skip_image_checks_alone(self):
+        for user in ("", "0", "root", "0:0", "root:root"):
+            with self.subTest(user=user):
+                p = self.check(user + "\n", self.PORT_8090, skip="true")
+                self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+                self.assertIn("image runs as root", p.stdout)
+
+    def test_root_passes_only_with_allow_root_image(self):
+        for user in ("", "0", "root", "0:0", "root:root"):
+            with self.subTest(user=user):
+                p = self.check(user + "\n", self.PORT_8090, skip="true", allow="true")
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertIn("::warning::image runs as root", p.stdout)
+
+    def test_skip_image_checks_turns_off_only_the_port_check(self):
+        p = self.check("65532\n", self.PORT_8090, skip="true")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_wrong_port_fails_without_skip(self):
+        p = self.check("node\n", self.PORT_8090)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("must expose exactly 80/tcp", p.stdout)
+
+    def test_allow_root_alone_does_not_turn_off_the_port_check(self):
+        p = self.check("root\n", self.PORT_8090, allow="true")
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("must expose exactly 80/tcp", p.stdout)
 
 
 class BootMigrations(unittest.TestCase):

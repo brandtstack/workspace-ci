@@ -1,0 +1,4 @@
+family: custom
+dockerfile: Dockerfile
+go: "1.27"
+skip-image-checks: true

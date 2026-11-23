@@ -1,0 +1,6 @@
+# expect: skip-image-checks: not allowed with coolify-app (a Coolify app needs port 80 and /healthz)
+family: custom
+dockerfile: Dockerfile
+node: "24"
+coolify-app: app0example0test
+skip-image-checks: true
