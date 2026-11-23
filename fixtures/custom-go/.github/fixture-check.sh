@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fixture-only check, run by app.yml's image job in brandtstack/workspace-ci while the smoke container is up.
 # $1 = base URL. The binary only starts when both smoke databases answer and FIXTURE_KEY decodes to 32 bytes;
-# this asserts what it saw, and that the key itself is not in the log.
+# this asserts what it saw, and that no database error is in the log.
 set -euo pipefail
 base="${1:?base url}"
 [ "$(curl -fsS "$base/dbs")" = "one,two" ] || { echo "fixture-check: /dbs is not 'one,two'" >&2; exit 1; }
