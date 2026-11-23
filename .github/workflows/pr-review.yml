@@ -147,7 +147,7 @@ jobs:
             find_comment
             if [ -n "$COMMENT_ID" ]; then
               jq -rs --argjson id "$COMMENT_ID" '[add[] | select(.id == $id)][0].body' "$T/comments.json" \
-                | sed "1{/^$MARKER\$/d}; /^> Not re-reviewed at /d" > "$T/old.md"
+                | sed "1{/^$MARKER\$/d;}; /^> Not re-reviewed at /d" > "$T/old.md"
               {
                 printf '%s\n> Not re-reviewed at `%s`: %s. The review below is for an earlier commit.\n' "$MARKER" "$SHORT" "$1"
                 cat "$T/old.md"
