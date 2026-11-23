@@ -25,7 +25,7 @@
       "minimumReleaseAge": "7 days"
     },
     {
-      "description": "Keep the go-ci integration Postgres on prod's major. Prod `personal-postgres` runs postgres:16-alpine (infra/reference/kvm4-platform.md), so a CI service on 18 would test against a server we do not run. Unpark when prod is upgraded.",
+      "description": "Keep the CI integration Postgres on prod's major. Production runs Postgres 16, so a CI service on 18 would test against a server we do not run. Unpark when prod is upgraded.",
       "matchDatasources": ["docker"],
       "matchDepNames": ["postgres"],
       "matchUpdateTypes": ["major"],

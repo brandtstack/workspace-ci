@@ -372,8 +372,8 @@ def rows(port):
     add("target legacy: the input, unchanged", r["rc"] == 0 and "uuid=legacy-1" in r["output"], r["out"] + r["output"])
     r = run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "", "APPS": "", "FAMILY": ""})
     add("target legacy without uuid: empty (tag-only caller)", r["rc"] == 0 and "uuid=\n" in r["output"], r["output"])
-    r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa", "NODE": "24", "GO": ""})
-    add("target contract: build.yml's app and family", r["rc"] == 0 and "uuid=winnfosay9q4zcm1iisu2rgm" in r["output"] and "family=spa" in r["output"], r["out"] + r["output"])
+    r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "testappuuid0000000000001", "FAMILY": "spa", "NODE": "24", "GO": ""})
+    add("target contract: build.yml's app and family", r["rc"] == 0 and "uuid=testappuuid0000000000001" in r["output"] and "family=spa" in r["output"], r["out"] + r["output"])
     add("target legacy writes no toolchain", "toolchain" not in run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "x", "APPS": "", "FAMILY": ""})["output"], "")
     G = "Refuse to deploy an image whose checks were skipped"
     add("skipped-checks guard: only with a Coolify target, before the sync, the promote and the tag",
@@ -383,14 +383,14 @@ def rows(port):
     # custom takes whichever of the two the contract names (validate.jq allows exactly one).
     for fam, node, go, want in (("next", "24", "", "node"), ("spa", "24", "", "node"), ("go", "", "1.27", "go"),
                                 ("custom", "24", "", "node"), ("custom", "", "1.27", "go")):
-        r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": fam, "NODE": node, "GO": go})
+        r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "testappuuid0000000000001", "FAMILY": fam, "NODE": node, "GO": go})
         add("target contract: %s with node=%r go=%r -> toolchain=%s" % (fam, node, go, want),
             r["rc"] == 0 and ("toolchain=%s\n" % want) in r["output"] and ("family=%s\n" % fam) in r["output"], r["out"] + r["output"])
-    for label, env in (("input also set", {"INPUT_UUID": "x", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa"}),
+    for label, env in (("input also set", {"INPUT_UUID": "x", "APPS": "testappuuid0000000000001", "FAMILY": "spa"}),
                        ("two apps", {"INPUT_UUID": "", "APPS": "a\nb", "FAMILY": "next"}),
                        ("no app", {"INPUT_UUID": "", "APPS": "", "FAMILY": "go"}),
-                       ("custom with neither node nor go", {"INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "custom", "NODE": "", "GO": ""}),
-                       ("unknown family", {"INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "nope", "NODE": "24"}),
+                       ("custom with neither node nor go", {"INPUT_UUID": "", "APPS": "testappuuid0000000000001", "FAMILY": "custom", "NODE": "", "GO": ""}),
+                       ("unknown family", {"INPUT_UUID": "", "APPS": "testappuuid0000000000001", "FAMILY": "nope", "NODE": "24"}),
                        ("path-shaped app", {"INPUT_UUID": "", "APPS": "../servers/abcdefgh", "FAMILY": "spa"}),
                        ("query-shaped app", {"INPUT_UUID": "", "APPS": "abcdefgh1234&force=true", "FAMILY": "spa"})):
         r = run(port, T, env=dict(env, CONTRACT="true"))

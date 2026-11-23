@@ -261,7 +261,7 @@ by passing it to **every** job, `release` included:
 ⚠️ **Never set it from a public repo** — a public repo's PRs would run untrusted code on home
 hardware. This repo is public and never sets it; the launcher also refuses any job from a public repo.
 Fallback if the Acer is down: set it back to `'"ubuntu-latest"'` (spends Actions minutes).
-Operations: `priv/infra/reference/ci-runner.md`.
+Operations are in the private runner docs.
 
 ⚠️ **`release` promotes the `:sha-<head>` image that `ci / image` published.** `app.yml` always publishes it, so a
 caller leaves `release`'s `publish-image` input on.
@@ -302,8 +302,8 @@ from `build.yml`'s `coolify-app` (exactly one, for now), and before deploying wr
 `ports_exposes` (80) and health check from the family: next/spa get Coolify's http check on
 `127.0.0.1:80/healthz`; go keeps Coolify's check off and relies on the image's own `HEALTHCHECK`
 (distroless has no shell for Coolify's `CMD-SHELL` check). That a disabled Coolify check keeps the image
-`HEALTHCHECK` on the deployed container is source-read only (ci-launcher `coolify_probe.md` row 1); the
-first go pilot (cc-usage) measures it with `docker inspect` on kvm4. The values are read back before the deploy;
+`HEALTHCHECK` on the deployed container is source-read only; the
+first go pilot measures it with `docker inspect` on the host. The values are read back before the deploy;
 hand edits in Coolify are overwritten on every release. The sync runs before the image is promoted
 and the tag pushed, so a refused or mismatched sync leaves nothing minted and a re-run retries it.
 `coolify-app` must be a Coolify uuid (8-64 lowercase letters and digits).
@@ -326,7 +326,7 @@ and the tag pushed, so a refused or mismatched sync leaves nothing minted and a 
 Rolling back across a port change (an app's first contract release moved it to 80) is not a plain tag
 swap: PATCH `ports_exposes` and the health check back to the old values first.
 
-Repo-specific image probes do not carry over: tilde's required `headers` job builds the repo's own
+Repo-specific image probes do not carry over: if a required `headers` job builds the repo's own
 Dockerfile, so on adoption it must move to pulling `:sha-<head>` after `ci / image` instead (spec step 3
 handles it).
 
@@ -517,5 +517,4 @@ The shared preset (`default.json`) folds `digest`, `pin` and `pinDigest` updates
 | `@babel/plugin-transform-runtime` | no major | consumers pin 7.29.7 via `overrides`; v8 drops that guard, then the next install ERESOLVEs |
 
 This repo's own `renovate.json` also parks the `postgres` docker major (`app.yml`'s integration service
-stays on 16 to match prod `personal-postgres`, per `infra/reference/kvm4-platform.md`, a doc, not
-the live container).
+stays on 16 to match the production database's major version).

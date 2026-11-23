@@ -7,7 +7,7 @@ Two halves:
   failures as well as for the scanner's own exit code;
 - the `govulncheck` step's own `run:` block, read from the YAML and run under `bash -e` like the
   runner, against a fake `go` and a fake scanner in a throwaway git repo with two modules (root and
-  server/, the cc-usage shape). Nothing leaves the machine.
+  server/, a common shape). Nothing leaves the machine.
 
 Run: python3 tests/app/test_govulncheck.py    (needs python3 with PyYAML, bash, git)
 """

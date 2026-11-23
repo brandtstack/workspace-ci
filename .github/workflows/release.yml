@@ -2,7 +2,7 @@ name: release
 
 # Mints the version on merge to main and promotes the already-built image.
 #
-# Ported from the aasanezoo-web .husky/pre-push auto-tagger, which cannot
+# Ported from an app's .husky/pre-push auto-tagger, which cannot
 # survive a PR workflow: it keys on a LOCAL push to refs/heads/main, and under
 # a PR flow main advances server-side, so the hook never fires and tagging
 # stops silently.
@@ -307,7 +307,7 @@ jobs:
       # otherwise turn that re-run into a no-op). If a later step fails after this one, Coolify keeps
       # the new settings while the old container keeps serving on its own labels; the next release
       # (or a hand /deploy of the new tag) completes it. Coolify's settings must be right before the deploy
-      # that starts the image listening on 80 (coolify_probe.md, ci-launcher: PATCH first, then one
+      # that starts the image listening on 80 (probed: PATCH first, then one
       # deploy, measured clean; deploy-then-PATCH measured 31 s of 502). Values are fixed per family,
       # never contract fields. go: Coolify's own check runs through CMD-SHELL and distroless has no
       # shell, so it stays off and the image's exec-form HEALTHCHECK does the job. Read back after the
@@ -451,7 +451,7 @@ jobs:
       # first. This is a constraint of the API, not a style choice.
       #
       # Base URL is the public, Cloudflare-Access-gated endpoint: a GitHub-hosted
-      # runner cannot reach kvm4's loopback :8000.
+      # runner cannot reach the Coolify host's loopback :8000.
       - name: Set APP_VERSION on the Coolify application
         if: steps.guard.outputs.skip == 'false' && inputs.publish-image && steps.target.outputs.uuid != ''
         env:

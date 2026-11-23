@@ -10,7 +10,7 @@
   "postUpdateOptions": ["npmInstallTwice"],
   "packageRules": [
     {
-      "description": "Leave the go.mod `go` directive alone. go-ci builds with `go-version` (default '1.27'), which setup-go satisfies from the runner's cached toolchain (1.27.1 on the Acer), so Renovate's pin to 1.27.3 made `go` refuse to build under GOTOOLCHAIN=local (bcli #8, cc-usage #11, identity #58, 2026-10-29). Moving Go is a fleet change: bump go-ci's default and the directives together, by hand.",
+      "description": "Leave the go.mod `go` directive alone. CI builds with `go-version` (default '1.27'), which setup-go satisfies from the runner's cached toolchain (1.27.1 on the self-hosted runner), so Renovate's pin to 1.27.3 made `go` refuse to build under GOTOOLCHAIN=local (2026-10-29). Moving Go is a fleet change: bump CI's default and the directives together, by hand.",
       "matchManagers": ["gomod"],
       "matchDepTypes": ["golang"],
       "enabled": false
@@ -43,7 +43,7 @@
       "allowedVersions": "<7"
     },
     {
-      "description": "Park @babel/plugin-transform-runtime 8. tilde, tend-web and buvik-web pin it at 7.29.7 via `overrides` as a guard. The v8 bump goes green but removes that guard, and the next incremental install then ERESOLVEs (v8 peers @babel/core ^8 while the tree resolves 7 via workbox-build and eslint-plugin-react-hooks). Unpark when those two move to @babel/core 8.",
+      "description": "Park @babel/plugin-transform-runtime 8. Some PWA repos pin it at 7.29.7 via `overrides` as a guard. The v8 bump goes green but removes that guard, and the next incremental install then ERESOLVEs (v8 peers @babel/core ^8 while the tree resolves 7 via workbox-build and eslint-plugin-react-hooks). Unpark when those two move to @babel/core 8.",
       "matchDepNames": ["@babel/plugin-transform-runtime"],
       "matchUpdateTypes": ["major"],
       "enabled": false

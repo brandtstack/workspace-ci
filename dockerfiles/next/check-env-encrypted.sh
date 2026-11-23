@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copied from brl-intraweb scripts/check-env-encrypted.sh (origin/main); the generic script, only this header and the usage line changed.
+# A generic script shared from an app repo; only this header and the usage line changed.
 # Refuses an env file that holds a plaintext secret. Fail closed: every line must be blank, a comment, or
 # `NAME=value` (optionally `export NAME=value`) with NAME matching [A-Za-z_][A-Za-z0-9_]*; any other line
 # is refused by line number. Every non-empty value must start with `encrypted:` (dotenvx), except
