@@ -10,9 +10,9 @@ def badpath: isstr and (startswith("/") or test("(\\A|/)\\.\\.(/|\\z)"));
 
 def keys_allowed: ["family","dockerfile","node","go","prisma","dotenvx","integration",
   "favicon","build-args","private-registry","coolify-app","smoke-args","go-main","go-dir","migrate",
-  "smoke-env","smoke-postgres","smoke-random","skip-image-checks"];
+  "smoke-env","smoke-postgres","smoke-random","skip-image-checks","allow-root-image"];
 def envname: "\\A[A-Z_][A-Z0-9_]*\\z";
-def bools: ["prisma","dotenvx","integration","private-registry","migrate","skip-image-checks"];
+def bools: ["prisma","dotenvx","integration","private-registry","migrate","skip-image-checks","allow-root-image"];
 
 . as $c
 | envname as $envname
@@ -128,6 +128,9 @@ def bools: ["prisma","dotenvx","integration","private-registry","migrate","skip-
          (("smoke-args","smoke-env","smoke-postgres","smoke-random") as $k | select(has($k))
            | "skip-image-checks: not allowed with \($k) (the image is not booted)")
        else empty end),
+      # allow-root-image: a separate, visible decision, and only for an image already outside the boot checks
+      (if $c["allow-root-image"] == true and $c["skip-image-checks"] != true
+       then "allow-root-image: requires skip-image-checks: true" else empty end),
       # go-only keys
       (("go-main","go-dir") as $k | select(has($k)) |
          (if $fam != "go" then "\($k): only allowed with family go"
@@ -160,7 +163,8 @@ def bools: ["prisma","dotenvx","integration","private-registry","migrate","skip-
           "smoke-env-b64": (if has("smoke-env") then [$c["smoke-env"] | to_entries[] | "\(.key)=\(.value)\n"] | join("") | @base64 else "" end),
           "smoke-postgres": (if has("smoke-postgres") then $c["smoke-postgres"] | join(" ") else "" end),
           "smoke-random": (if has("smoke-random") then [$c["smoke-random"] | to_entries[] | "\(.key):\(.value)"] | join(" ") else "" end),
-          "skip-image-checks": bl("skip-image-checks")
+          "skip-image-checks": bl("skip-image-checks"),
+          "allow-root-image": bl("allow-root-image")
         }}
       end
   end

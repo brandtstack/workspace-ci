@@ -20,7 +20,8 @@ JOBS = WF["jobs"]
 PIN = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+@[0-9a-f]{40}$")
 OUTPUTS = ["family", "dockerfile", "node", "go", "prisma", "dotenvx", "integration", "favicon",
            "build-args", "private-registry", "coolify-app", "smoke-args", "go-main", "go-dir", "migrate",
-           "smoke-env-b64", "smoke-postgres", "smoke-random", "skip-image-checks"]
+           "smoke-env-b64", "smoke-postgres", "smoke-random", "skip-image-checks",
+           "allow-root-image"]
 
 
 def steps(job):
@@ -295,11 +296,11 @@ class AppShape(unittest.TestCase):
     def test_skip_image_checks_gates_only_the_checks(self):
         off = "needs.verify.outputs.skip-image-checks != 'true'"
         by_name = {s.get("name", ""): s for s in steps("image")}
-        for name in ("Image contract (non-root user, exposed port 80)", "Boot and smoke test",
-                     "Smoke test from INSIDE the container", "Custom go image HEALTHCHECK"):
+        for name in ("Boot and smoke test", "Smoke test from INSIDE the container", "Custom go image HEALTHCHECK"):
             self.assertIn(off, by_name[name]["if"], name)
-        # Build, teardown and publish must still run for these images.
-        for name in ("Build production image", "Tear down", "Publish :sha-<head> to GHCR"):
+        # Build, the non-root check, teardown and publish must still run for these images.
+        for name in ("Build production image", "Image contract (non-root user, exposed port 80)", "Tear down",
+                     "Publish :sha-<head> to GHCR"):
             self.assertNotIn("skip-image-checks", by_name[name].get("if", ""), name)
 
     def test_custom_go_healthcheck_step(self):
@@ -392,8 +393,10 @@ class AppShape(unittest.TestCase):
         self.assertIn('0:*', run)
         self.assertIn("root", run)
         self.assertIn('\'{"80/tcp":{}}\'', run)
-        # Every caller, not fixture-only: the contract's skip-image-checks is the one way out.
-        self.assertEqual(ss[i[0]]["if"], "needs.verify.outputs.skip-image-checks != 'true'")
+        self.assertNotIn("if", ss[i[0]])  # every caller, not fixture-only
+        self.assertEqual(ss[i[0]]["env"], {
+            "SKIP_IMAGE_CHECKS": "${{ needs.verify.outputs.skip-image-checks }}",
+            "ALLOW_ROOT_IMAGE": "${{ needs.verify.outputs.allow-root-image }}"})
 
     def test_fixture_check_is_workspace_ci_only(self):
         ss = steps("image")

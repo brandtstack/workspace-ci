@@ -30,6 +30,7 @@ def base(**kw):
         "private-registry": "false", "coolify-app": "", "smoke-args": "",
         "go-main": "", "go-dir": "", "migrate": "false",
         "smoke-env-b64": "", "smoke-postgres": "", "smoke-random": "", "skip-image-checks": "false",
+        "allow-root-image": "false",
     }
     out.update(kw)
     return out
@@ -63,6 +64,8 @@ EXPECTED = {
            "smoke-random": "FIXTURE_KEY:32 OTHER_KEY:64"}),
     "ok-favicon-empty": base(family="spa", dockerfile=dockerfile("spa"), node="24"),
     "ok-skip-image-checks": base(family="custom", dockerfile="Dockerfile", go="1.27", **{"skip-image-checks": "true"}),
+    "ok-allow-root-image": base(family="custom", dockerfile="Dockerfile", node="24",
+                                **{"skip-image-checks": "true", "allow-root-image": "true"}),
 }
 
 

@@ -66,6 +66,7 @@ jobs:
       smoke-postgres:   ${{ steps.contract.outputs.smoke-postgres }}
       smoke-random:     ${{ steps.contract.outputs.smoke-random }}
       skip-image-checks: ${{ steps.contract.outputs.skip-image-checks }}
+      allow-root-image: ${{ steps.contract.outputs.allow-root-image }}
     defaults:
       run:
         working-directory: ${{ inputs.path }}
@@ -498,19 +499,28 @@ jobs:
           secret-envs: ${{ needs.verify.outputs.private-registry == 'true' && 'npm_token=NPM_TOKEN' || '' }}
 
       # D4 for every app: the image runs as a non-root user and exposes exactly port 80.
-      # skip-image-checks (custom images outside Coolify that cannot boot in CI) turns off this step and the
-      # boot and health steps below. The build above and the publish at the end still run.
+      # skip-image-checks (custom images outside Coolify that cannot boot in CI) turns off the port check here and
+      # the boot and health steps below. The non-root check needs no boot, so it stays on unless the contract also
+      # says allow-root-image. The build above and the publish at the end still run.
       - name: Image contract (non-root user, exposed port 80)
-        if: needs.verify.outputs.skip-image-checks != 'true'
+        env:
+          SKIP_IMAGE_CHECKS: ${{ needs.verify.outputs.skip-image-checks }}
+          ALLOW_ROOT_IMAGE: ${{ needs.verify.outputs.allow-root-image }}
         run: |
           set -euo pipefail
           user="$(docker image inspect --format '{{.Config.User}}' ci-image:local)"
           ports="$(docker image inspect --format '{{json .Config.ExposedPorts}}' ci-image:local)"
           echo "Config.User=${user} Config.ExposedPorts=${ports}"
           case "$user" in
-            ""|0|root|0:*|root:*) echo "::error::image runs as root (Config.User='${user}')"; exit 1 ;;
+            ""|0|root|0:*|root:*)
+              if [ "$ALLOW_ROOT_IMAGE" = true ]; then
+                echo "::warning::image runs as root (Config.User='${user}'), allowed by allow-root-image"
+              else
+                echo "::error::image runs as root (Config.User='${user}')"
+                exit 1
+              fi ;;
           esac
-          if [ "$ports" != '{"80/tcp":{}}' ]; then
+          if [ "$SKIP_IMAGE_CHECKS" != true ] && [ "$ports" != '{"80/tcp":{}}' ]; then
             echo "::error::image must expose exactly 80/tcp, got ${ports}"
             exit 1
           fi

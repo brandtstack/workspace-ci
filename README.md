@@ -390,10 +390,11 @@ random base64) and `smoke-postgres` (database names created in a throwaway Postg
 wrapper-ENTRYPOINT recipe: [`dockerfiles/README.md`](dockerfiles/README.md#custom).
 
 `skip-image-checks: true` is for a `custom` image that cannot boot in CI and is not deployed by Coolify (ci-launcher,
-game-panel). The `image` job still builds it and publishes `:sha-<head>`, but skips the user and port check, the boot
-and the health checks, so a root image passes. It is refused together with `coolify-app` or any smoke key. That refusal
-covers `build.yml` only: a caller that passes `coolify-app-uuid` to `release.yml` in legacy mode is not checked, so never
-combine that input with this key.
+game-panel). The `image` job still builds it, publishes `:sha-<head>` and fails a root image, but skips the port check,
+the boot and the health checks. It is refused together with `coolify-app` or any smoke key. That refusal covers
+`build.yml` only: a caller that passes `coolify-app-uuid` to `release.yml` in legacy mode is not checked, so never combine
+that input with this key. `allow-root-image: true` (requires `skip-image-checks`) lets an image that really runs as root
+pass, with a warning in the log. Set it only for such an image (game-panel, for its docker socket).
 
 ### Building it locally
 
