@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline rows for the govulncheck steps of .github/workflows/go-ci.yml.
+"""Offline rows for the govulncheck steps of .github/workflows/app.yml.
 
 Two halves:
 - the step wiring, read from the YAML (order, ids, `if:`, `continue-on-error`, ENFORCE), which is
@@ -9,7 +9,7 @@ Two halves:
   runner, against a fake `go` and a fake scanner in a throwaway git repo with two modules (root and
   server/, the cc-usage shape). Nothing leaves the machine.
 
-Run: python3 tests/go-ci/test_govulncheck.py     (needs python3 with PyYAML, bash, git)
+Run: python3 tests/app/test_govulncheck.py    (needs python3 with PyYAML, bash, git)
 """
 import os
 import re
@@ -20,8 +20,7 @@ import tempfile
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "go-ci.yml")
-APP_WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "app.yml")
+WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "app.yml")
 README = os.path.join(HERE, "..", "..", "README.md")
 
 
@@ -138,20 +137,21 @@ def rows():
     make = next(i for i, x in enumerate(wf) if x.get("run") == "make verify")
     add("order: make verify -> latest-Go setup -> skip warning -> govulncheck",
         make < ix("Set up the latest Go") < ix("govulncheck skipped") < names.index("govulncheck"), str(names))
-    add("setup uses check-latest and the go-version input",
-        setup.get("with", {}).get("check-latest") is True and "inputs.go-version" in str(setup["with"]["go-version"]))
+    add("setup uses check-latest and the contract's Go version",
+        setup.get("with", {}).get("check-latest") is True and "steps.contract.outputs.go" in str(setup["with"]["go-version"]))
     add("setup has id vulngo", setup.get("id") == "vulngo")
     push_only = "${{ github.event_name == 'push' }}"
     add("setup: continue-on-error only on a push", setup.get("continue-on-error") == push_only, str(setup.get("continue-on-error")))
     add("scan: continue-on-error only on a push", scan.get("continue-on-error") == push_only, str(scan.get("continue-on-error")))
     add("scan: ENFORCE is true for every event but a push",
         scan["env"]["ENFORCE"] == "${{ github.event_name != 'push' }}", scan["env"]["ENFORCE"])
-    add("scan runs only after a successful setup", scan.get("if") == "steps.vulngo.outcome == 'success'", str(scan.get("if")))
-    add("skip warning runs only after a failed setup", skip.get("if") == "steps.vulngo.outcome == 'failure'", str(skip.get("if")))
+    add("scan runs only for a Go app after a successful setup",
+        scan.get("if") == "steps.contract.outputs.go != '' && steps.vulngo.outcome == 'success'", str(scan.get("if")))
+    add("skip warning runs only for a Go app after a failed setup",
+        skip.get("if") == "steps.contract.outputs.go != '' && steps.vulngo.outcome == 'failure'", str(skip.get("if")))
     add("no ${{ }} expression inside any new run: block",
         all("${{" not in x.get("run", "") for x in (skip, scan)))
     add("scanner version is exact-pinned", re.fullmatch(r"v\d+\.\d+\.\d+", scan["env"]["GOVULNCHECK_VERSION"]) is not None, scan["env"]["GOVULNCHECK_VERSION"])
-    add("app.yml and go-ci.yml pin the same scanner version", pin(APP_WORKFLOW) == VERSION, pin(APP_WORKFLOW))
     with open(README) as f:
         readme_pin = re.search(r"`govulncheck` \(pinned `(v\d+\.\d+\.\d+)`\)", f.read())
     add("README names the pinned scanner version in the form Renovate updates",

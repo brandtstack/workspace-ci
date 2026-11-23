@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Offline rows for the `favicon` input and tabcheck step of .github/workflows/node-ci.yml.
+"""Offline rows for the contract's `favicon` key and the tabcheck step of .github/workflows/app.yml.
 
-Read from the YAML only; nothing runs. Run: python3 tests/node-ci/test_favicon.py (needs PyYAML)
+Read from the YAML only; nothing runs. Run: python3 tests/app/test_favicon.py (needs PyYAML)
 """
 import os
 import re
@@ -11,13 +11,11 @@ import unittest
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "node-ci.yml")
+WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "app.yml")
 
 with open(WORKFLOW) as f:
     WF = yaml.safe_load(f)
 
-# PyYAML (YAML 1.1) parses the bare key `on` as boolean True.
-ON = WF.get("on", WF.get(True))
 STEPS = WF["jobs"]["verify"]["steps"]
 TABCHECK = re.compile(r"^brandtstack/tabcheck@[0-9a-f]{40}$")
 
@@ -37,18 +35,15 @@ def verify_index():
 
 
 class FaviconTests(unittest.TestCase):
-    def test_input_declared(self):
-        inp = ON["workflow_call"]["inputs"].get("favicon")
-        self.assertIsNotNone(inp, "favicon input missing")
-        self.assertEqual(inp["type"], "string")
-        self.assertEqual(inp["default"], "")
+    def test_output_exported(self):
+        self.assertEqual(WF["jobs"]["verify"]["outputs"]["favicon"], "${{ steps.contract.outputs.favicon }}")
 
     def test_step_guarded(self):
         i = tabcheck_index()
         self.assertIsNotNone(i, "no tabcheck@<40-hex> step in the verify job")
         step = STEPS[i]
-        self.assertEqual(step.get("if"), "inputs.favicon != ''")
-        self.assertEqual(step["with"]["path"], "${{ inputs.favicon }}")
+        self.assertEqual(step.get("if"), "steps.contract.outputs.favicon != ''")
+        self.assertEqual(step["with"]["path"], "${{ steps.contract.outputs.favicon }}")
 
     def test_step_after_verify(self):
         t, v = tabcheck_index(), verify_index()
