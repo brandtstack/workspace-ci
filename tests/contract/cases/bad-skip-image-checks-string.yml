@@ -1,0 +1,5 @@
+# expect: skip-image-checks: must be a boolean (true/false), not a string
+family: custom
+dockerfile: Dockerfile
+node: "24"
+skip-image-checks: "true"

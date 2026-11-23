@@ -389,6 +389,17 @@ random base64) and `smoke-postgres` (database names created in a throwaway Postg
 `postgresql://smoke:smoke@smoke-pg:5432/<name>?sslmode=disable`). They are smoke-only. Rules, the image gates and a
 wrapper-ENTRYPOINT recipe: [`dockerfiles/README.md`](dockerfiles/README.md#custom).
 
+`skip-image-checks: true` is for a `custom` image that cannot boot in CI and is not deployed by Coolify. The `image` job
+still builds it, publishes `:sha-<head>` and fails a root image, but skips the port check, the boot and the health
+checks. It is refused together with `coolify-app` or any smoke key. The image carries the label
+`workspace-ci.image-checks-skipped=true`, and `release.yml` refuses to deploy a labelled image to Coolify, before it
+changes anything (an image whose labels cannot be read also stops the release). That refusal lives in `release.yml`, so
+a repo adopting the key must move its `app.yml` and `release.yml` pins together. Such a repo releases tag-only:
+`contract: false` and no `coolify-app-uuid` (a contract-mode release needs a `coolify-app`). `allow-root-image: true`
+(requires `skip-image-checks`) lets a root image pass, with a warning in the log. The run summary records both. Each
+repo opts in from its own `build.yml`, so review a change to either key like a change to the workflow, for example with
+a CODEOWNERS entry on `.github/build.yml`.
+
 ### Building it locally
 
 `scripts/build-image [--no-verify] [--no-smoke] [<repo dir>]` builds what the `image` job builds, with

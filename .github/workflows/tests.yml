@@ -98,13 +98,56 @@ jobs:
           [ "$rc" -eq 1 ] || { echo "::error::expected exit 1 from the gate"; exit 1; }
           case "$out" in *"custom go image has no HEALTHCHECK"*) ;; *) echo "::error::output does not name the missing HEALTHCHECK"; exit 1 ;; esac
 
+  # release.yml's skipped-checks guard against real images in a throwaway local registry, with the real buildx. The
+  # step's script is read out of release.yml itself; only the registry host is swapped.
+  skipped-image-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      registry:
+        image: registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports: ['5000:5000']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: A labelled image is refused, an unlabelled one passes, an unreadable one fails closed
+        run: |
+          set -u
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --disable-pip-version-check PyYAML==6.0.3
+          "$RUNNER_TEMP/venv/bin/python" - > "$RUNNER_TEMP/gate.sh" <<'PY'
+          import yaml
+          wf = yaml.safe_load(open(".github/workflows/release.yml"))
+          step = [s for s in wf["jobs"]["release"]["steps"] if s.get("name") == "Refuse to deploy an image whose checks were skipped"][0]
+          print(step["run"].replace("ghcr.io/", "127.0.0.1:5000/"))
+          PY
+          # The step builds its image name from GITHUB_REPOSITORY, which a step cannot override.
+          img="127.0.0.1:5000/${GITHUB_REPOSITORY,,}"
+          tar -cT /dev/null | docker import --change 'LABEL workspace-ci.image-checks-skipped=true' - "${img}:sha-skipped"
+          tar -cT /dev/null | docker import --change 'LABEL other=1' - "${img}:sha-checked"
+          docker push -q "${img}:sha-skipped"
+          docker push -q "${img}:sha-checked"
+          rc=0; out="$(HEAD=skipped bash "$RUNNER_TEMP/gate.sh" 2>&1)" || rc=$?
+          echo "skipped: exit $rc: $out"
+          [ "$rc" -eq 1 ] || { echo "::error::expected the labelled image to be refused"; exit 1; }
+          case "$out" in *"built with skip-image-checks"*) ;; *) echo "::error::refused for the wrong reason"; exit 1 ;; esac
+          rc=0; out="$(HEAD=checked bash "$RUNNER_TEMP/gate.sh" 2>&1)" || rc=$?
+          echo "checked: exit $rc: $out"
+          [ "$rc" -eq 0 ] || { echo "::error::expected the unlabelled image to pass"; exit 1; }
+          case "$out" in *"image checks ran"*) ;; *) echo "::error::the guard did not read the labels"; exit 1 ;; esac
+          rc=0; out="$(HEAD=missing bash "$RUNNER_TEMP/gate.sh" 2>&1)" || rc=$?
+          echo "missing: exit $rc: $out"
+          [ "$rc" -eq 1 ] || { echo "::error::an unreadable image must fail closed"; exit 1; }
+          case "$out" in *"after 3 tries"*) ;; *) echo "::error::expected the could-not-read error"; exit 1 ;; esac
+
   # The fixture apps run through the real contract workflow, same-repo (so the ref check applies).
   # Public repo: GitHub-hosted runners only, never the Acer. app.yml's publish steps are off in this repo.
   fixtures:
     strategy:
       fail-fast: false
       matrix:
-        family: [next, next-dotenvx, next-multischema, spa, go, custom-node, custom-go]
+        family: [next, next-dotenvx, next-multischema, spa, go, custom-node, custom-go, custom-no-boot]
     permissions:
       contents: read
       packages: write

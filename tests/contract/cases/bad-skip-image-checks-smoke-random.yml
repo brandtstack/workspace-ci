@@ -1,0 +1,7 @@
+# expect: skip-image-checks: not allowed with smoke-random (the image is not booted)
+family: custom
+dockerfile: Dockerfile
+node: "24"
+smoke-random:
+  KEY: 32
+skip-image-checks: true

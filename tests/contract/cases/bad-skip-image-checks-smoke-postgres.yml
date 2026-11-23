@@ -1,0 +1,7 @@
+# expect: skip-image-checks: not allowed with smoke-postgres (the image is not booted)
+family: custom
+dockerfile: Dockerfile
+node: "24"
+smoke-postgres:
+  - app
+skip-image-checks: true

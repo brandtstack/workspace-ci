@@ -1,0 +1,3 @@
+# expect: skip-image-checks: only allowed with family custom
+family: spa
+skip-image-checks: true

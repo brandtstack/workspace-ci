@@ -356,8 +356,8 @@ def rows(port):
         "", "Require the workflow's own ref",
         "Check out workspace-ci at its own ref", "Move workspace-ci out of the workspace", "Read the build contract",
         "Resolve the Coolify target", "Skip if this commit is already version-tagged", "Derive version from the squash commit title",
-        "Resolve the version to release", "Resolve the PR head SHA this merge came from", "Sync Coolify from build.yml", "",
-        "Promote the tested image to ${{ steps.ver.outputs.version }}", "Push git tag", "Write the Release state helper",
+        "Resolve the version to release", "Resolve the PR head SHA this merge came from", "",
+        "Refuse to deploy an image whose checks were skipped", "Sync Coolify from build.yml", "Promote the tested image to ${{ steps.ver.outputs.version }}", "Push git tag", "Write the Release state helper",
         "Set APP_VERSION on the Coolify application", "Point the Coolify application at ${{ steps.v.outputs.version }}", "Deploy",
         "Create the GitHub Release", "Wait for the deployment and mark the Release", "Mark a Release whose deploy never started"],
         " | ".join(names))
@@ -374,6 +374,10 @@ def rows(port):
     r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa", "NODE": "24", "GO": ""})
     add("target contract: build.yml's app and family", r["rc"] == 0 and "uuid=winnfosay9q4zcm1iisu2rgm" in r["output"] and "family=spa" in r["output"], r["out"] + r["output"])
     add("target legacy writes no toolchain", "toolchain" not in run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "x", "APPS": "", "FAMILY": ""})["output"], "")
+    G = "Refuse to deploy an image whose checks were skipped"
+    add("skipped-checks guard: only with a Coolify target, before the sync, the promote and the tag",
+        steps[G]["if"] == "steps.guard.outputs.skip == 'false' && inputs.publish-image && steps.target.outputs.uuid != ''"
+        and ix(G) < ix("Sync Coolify from build.yml") < ix("Promote the tested image") < ix("Push git tag"), str(steps[G].get("if")))
     # family table: (family, contract node, contract go) -> toolchain. next/spa carry node, go carries go,
     # custom takes whichever of the two the contract names (validate.jq allows exactly one).
     for fam, node, go, want in (("next", "24", "", "node"), ("spa", "24", "", "node"), ("go", "", "1.27", "go"),

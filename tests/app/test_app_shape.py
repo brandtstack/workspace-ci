@@ -20,7 +20,8 @@ JOBS = WF["jobs"]
 PIN = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+@[0-9a-f]{40}$")
 OUTPUTS = ["family", "dockerfile", "node", "go", "prisma", "dotenvx", "integration", "favicon",
            "build-args", "private-registry", "coolify-app", "smoke-args", "go-main", "go-dir", "migrate",
-           "smoke-env-b64", "smoke-postgres", "smoke-random"]
+           "smoke-env-b64", "smoke-postgres", "smoke-random", "skip-image-checks",
+           "allow-root-image"]
 
 
 def steps(job):
@@ -148,7 +149,9 @@ class AppShape(unittest.TestCase):
         self.assertNotIn("load", w)
         self.assertEqual(w["tags"], "ci-image:local")
         self.assertEqual(b[0]["env"]["SOURCE_DATE_EPOCH"], "1767225600")
-        self.assertEqual(w["labels"], "org.opencontainers.image.created=${{ steps.meta.outputs.created }}")
+        self.assertEqual(w["labels"].splitlines(), [
+            "org.opencontainers.image.created=${{ steps.meta.outputs.created }}",
+            "${{ needs.verify.outputs.skip-image-checks == 'true' && 'workspace-ci.image-checks-skipped=true' || '' }}"])
         meta = [s for s in steps("image") if s.get("id") == "meta"][0]["run"]
         self.assertIn('echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"', meta)
 
@@ -292,12 +295,22 @@ class AppShape(unittest.TestCase):
         self.assertIn("docker network rm smoke-net", td["run"])
         self.assertNotIn("trap", run)
 
+    def test_skip_image_checks_gates_only_the_checks(self):
+        off = "needs.verify.outputs.skip-image-checks != 'true'"
+        by_name = {s.get("name", ""): s for s in steps("image")}
+        for name in ("Boot and smoke test", "Smoke test from INSIDE the container", "Custom go image HEALTHCHECK"):
+            self.assertIn(off, by_name[name]["if"], name)
+        # Build, the non-root check, teardown and publish must still run for these images.
+        for name in ("Build production image", "Image contract (non-root user, exposed port 80)", "Tear down",
+                     "Publish :sha-<head> to GHCR"):
+            self.assertNotIn("skip-image-checks", by_name[name].get("if", ""), name)
+
     def test_custom_go_healthcheck_step(self):
         names = [s.get("name", "") for s in steps("image")]
         gate = [s for s in steps("image") if s.get("name") == "Custom go image HEALTHCHECK"]
         self.assertEqual(len(gate), 1)
         g = gate[0]
-        self.assertEqual(g["if"], "needs.verify.outputs.family == 'custom' && needs.verify.outputs.go != ''")
+        self.assertEqual(g["if"], "needs.verify.outputs.family == 'custom' && needs.verify.outputs.go != '' && needs.verify.outputs.skip-image-checks != 'true'")
         run = g["run"]
         self.assertNotIn("${{", run)
         self.assertIn("custom go image has no HEALTHCHECK", run)
@@ -383,6 +396,9 @@ class AppShape(unittest.TestCase):
         self.assertIn("root", run)
         self.assertIn('\'{"80/tcp":{}}\'', run)
         self.assertNotIn("if", ss[i[0]])  # every caller, not fixture-only
+        self.assertEqual(ss[i[0]]["env"], {
+            "SKIP_IMAGE_CHECKS": "${{ needs.verify.outputs.skip-image-checks }}",
+            "ALLOW_ROOT_IMAGE": "${{ needs.verify.outputs.allow-root-image }}"})
 
     def test_fixture_check_is_workspace_ci_only(self):
         ss = steps("image")
