@@ -389,6 +389,10 @@ random base64) and `smoke-postgres` (database names created in a throwaway Postg
 `postgresql://smoke:smoke@smoke-pg:5432/<name>?sslmode=disable`). They are smoke-only. Rules, the image gates and a
 wrapper-ENTRYPOINT recipe: [`dockerfiles/README.md`](dockerfiles/README.md#custom).
 
+`skip-image-checks: true` is for a `custom` image that cannot boot in CI and is not deployed by Coolify (ci-launcher,
+game-panel). The `image` job still builds it and publishes `:sha-<head>`, but skips the user and port check, the boot
+and the health checks. It is refused together with `coolify-app` or any smoke key.
+
 ### Building it locally
 
 `scripts/build-image [--no-verify] [--no-smoke] [<repo dir>]` builds what the `image` job builds, with

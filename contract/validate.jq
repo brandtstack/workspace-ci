@@ -10,9 +10,9 @@ def badpath: isstr and (startswith("/") or test("(\\A|/)\\.\\.(/|\\z)"));
 
 def keys_allowed: ["family","dockerfile","node","go","prisma","dotenvx","integration",
   "favicon","build-args","private-registry","coolify-app","smoke-args","go-main","go-dir","migrate",
-  "smoke-env","smoke-postgres","smoke-random"];
+  "smoke-env","smoke-postgres","smoke-random","skip-image-checks"];
 def envname: "\\A[A-Z_][A-Z0-9_]*\\z";
-def bools: ["prisma","dotenvx","integration","private-registry","migrate"];
+def bools: ["prisma","dotenvx","integration","private-registry","migrate","skip-image-checks"];
 
 . as $c
 | envname as $envname
@@ -120,6 +120,14 @@ def bools: ["prisma","dotenvx","integration","private-registry","migrate"];
                else empty end))
           end)
        else empty end),
+      # skip-image-checks: for an image that cannot boot in CI and is not deployed by Coolify. A Coolify app relies on
+      # port 80 and /healthz, so the two never combine; the smoke keys would have nothing to configure.
+      (if $c["skip-image-checks"] == true then
+         (if $famok != null and $fam != "custom" then "skip-image-checks: only allowed with family custom" else empty end),
+         (if has("coolify-app") then "skip-image-checks: not allowed with coolify-app (a Coolify app needs port 80 and /healthz)" else empty end),
+         (("smoke-args","smoke-env","smoke-postgres","smoke-random") as $k | select(has($k))
+           | "skip-image-checks: not allowed with \($k) (the image is not booted)")
+       else empty end),
       # go-only keys
       (("go-main","go-dir") as $k | select(has($k)) |
          (if $fam != "go" then "\($k): only allowed with family go"
@@ -151,7 +159,8 @@ def bools: ["prisma","dotenvx","integration","private-registry","migrate"];
           # base64 of the K=V lines, each newline-terminated: one line, so it travels as a plain output
           "smoke-env-b64": (if has("smoke-env") then [$c["smoke-env"] | to_entries[] | "\(.key)=\(.value)\n"] | join("") | @base64 else "" end),
           "smoke-postgres": (if has("smoke-postgres") then $c["smoke-postgres"] | join(" ") else "" end),
-          "smoke-random": (if has("smoke-random") then [$c["smoke-random"] | to_entries[] | "\(.key):\(.value)"] | join(" ") else "" end)
+          "smoke-random": (if has("smoke-random") then [$c["smoke-random"] | to_entries[] | "\(.key):\(.value)"] | join(" ") else "" end),
+          "skip-image-checks": bl("skip-image-checks")
         }}
       end
   end

@@ -52,9 +52,17 @@
       "additionalProperties": { "type": "integer", "minimum": 16, "maximum": 64 },
       "description": "Name -> byte count. Each name is set, per run, to that many fresh random bytes as base64 (for KEK-style keys). Smoke only. A name may not also be in smoke-env."
     },
-    "migrate": { "type": "boolean", "description": "next only, requires prisma: true. The image runs `prisma migrate deploy` at start, before the server (dockerfiles/README.md, next)." }
+    "migrate": { "type": "boolean", "description": "next only, requires prisma: true. The image runs `prisma migrate deploy` at start, before the server (dockerfiles/README.md, next)." },
+    "skip-image-checks": { "type": "boolean", "description": "custom only, for an image that cannot boot in CI and is not deployed by Coolify. true still builds and publishes :sha-<head> but skips the user and port check, the boot and the health checks. Not allowed with coolify-app or any smoke key." }
   },
   "allOf": [
+    {
+      "if": { "properties": { "skip-image-checks": { "const": true } }, "required": ["skip-image-checks"] },
+      "then": {
+        "properties": { "family": { "const": "custom" } },
+        "not": { "anyOf": [{ "required": ["coolify-app"] }, { "required": ["smoke-args"] }, { "required": ["smoke-env"] }, { "required": ["smoke-postgres"] }, { "required": ["smoke-random"] }] }
+      }
+    },
     {
       "if": { "properties": { "family": { "const": "custom" } }, "required": ["family"] },
       "then": {

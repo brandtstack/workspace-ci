@@ -163,6 +163,13 @@ The env file is written to the runner's temp dir with mode 600, never printed, a
 only `custom`. Fixtures: `fixtures/custom-node` (a wrapper ENTRYPOINT, `smoke-args`, `smoke-env`) and
 `fixtures/custom-go` (`smoke-postgres`, `smoke-env`, `smoke-random`, the HEALTHCHECK gate).
 
+### `skip-image-checks`
+
+`skip-image-checks: true` (custom only) is for an image that cannot boot in CI and is not deployed by Coolify. The image
+is still built and published as `:sha-<head>`. The non-root and port 80 check, the boot, the `/healthz` probes and the
+HEALTHCHECK gate do not run, so a green `ci / image` proves only that the image builds. It is refused with `coolify-app`
+and with any smoke key. Fixture: `fixtures/custom-no-boot` (runs as root, exposes 8090, exits at start).
+
 ## Not supported yet (step 3 extends the files if a pilot needs it)
 
 - Prisma `prisma-client-js` (client inside `node_modules`): not supported, by decision (spec step 3). Switch
