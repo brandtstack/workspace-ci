@@ -19,7 +19,8 @@ bundle="$(curl -fsS "$base$js")"
 # The quote character and the exact shape depend on the minifier, so accept a quoted 1 within a short
 # window of the fixture id, in either order. If VITE_FIXTURE never reached the build, no literal 1 is there.
 q='["'"'"'`]'
-if printf '%s' "$bundle" | grep -Eq "fixture${q}.{0,40}${q}1${q}|${q}1${q}.{0,40}fixture${q}"; then
+# A here-string, not a pipe: under pipefail, grep -q closing the pipe early on a large multi-line bundle reads as no match.
+if grep -Eq "fixture${q}.{0,40}${q}1${q}|${q}1${q}.{0,40}fixture${q}" <<<"$bundle"; then
   echo "fixture-check: build-arg VITE_FIXTURE=1 inlined in $js"
 else
   echo "fixture-check: this check looks for the value of VITE_FIXTURE (1) in the built bundle $js, next to the id 'fixture'; not found." >&2
