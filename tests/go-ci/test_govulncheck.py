@@ -12,6 +12,7 @@ Two halves:
 Run: python3 tests/go-ci/test_govulncheck.py     (needs python3 with PyYAML, bash, git)
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,16 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "go-ci.yml")
-VERSION = "v1.9.0"
+APP_WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "app.yml")
+
+
+def pin(path):
+    """The govulncheck pin in a workflow. Renovate bumps it there; this test keeps no copy."""
+    with open(path) as f:
+        return re.search(r"GOVULNCHECK_VERSION: (\S+)", f.read()).group(1)
+
+
+VERSION = pin(WORKFLOW)
 GOVERSION = "go1.27.3"
 
 # `go env GOVERSION` -> GOVERSION; `go install` -> copies the fake scanner into $GOBIN, or fails
@@ -139,7 +149,8 @@ def rows():
     add("skip warning runs only after a failed setup", skip.get("if") == "steps.vulngo.outcome == 'failure'", str(skip.get("if")))
     add("no ${{ }} expression inside any new run: block",
         all("${{" not in x.get("run", "") for x in (skip, scan)))
-    add("scanner version is exact-pinned", scan["env"]["GOVULNCHECK_VERSION"] == VERSION, scan["env"]["GOVULNCHECK_VERSION"])
+    add("scanner version is exact-pinned", re.fullmatch(r"v\d+\.\d+\.\d+", scan["env"]["GOVULNCHECK_VERSION"]) is not None, scan["env"]["GOVULNCHECK_VERSION"])
+    add("app.yml and go-ci.yml pin the same scanner version", pin(APP_WORKFLOW) == VERSION, pin(APP_WORKFLOW))
 
     # ---- the govulncheck run: block ----
     with tempfile.TemporaryDirectory() as base:
