@@ -197,8 +197,11 @@ jobs:
           patch="${patch%%[-+]*}"   # drop any prerelease/build suffix
 
           level="patch"
+          # The body is a here-string, not a pipe: on a long multi-line body, grep -q exits at its first match,
+          # printf dies on SIGPIPE and pipefail reads the match as a miss. The subject is one line, so grep
+          # has to read all of it first.
           if printf '%s\n' "$subject" | grep -qE '^[a-zA-Z]+(\([^)]*\))?!:' \
-             || printf '%s\n' "$body" | grep -q 'BREAKING CHANGE'; then
+             || grep -q 'BREAKING CHANGE' <<<"$body"; then
             level="major"
           elif printf '%s\n' "$subject" | grep -qE '^feat(\([^)]*\))?:'; then
             level="minor"

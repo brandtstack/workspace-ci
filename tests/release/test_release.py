@@ -112,12 +112,13 @@ def step(name, port):
     return found[0]["run"].replace(HOST, "http://127.0.0.1:%d" % port)
 
 
-def git_repo(base, tag=None, newer=None):
+def git_repo(base, tag=None, newer=None, body=None):
     repo = os.path.join(base, "repo")
     os.makedirs(repo)
     g = lambda *a: subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True, text=True).stdout.strip()
     g("init", "-q")
-    g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "feat: a change")
+    g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "feat: a change",
+      *(["-m", body] if body else []))
     if tag:
         g("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", tag, "-m", tag)
     sha = g("rev-parse", "HEAD")
@@ -127,7 +128,7 @@ def git_repo(base, tag=None, newer=None):
     return repo, sha
 
 
-def run(port, name, *, env=None, releases=None, fail=None, fail_once=None, script=None, tag=None, newer=None):
+def run(port, name, *, env=None, releases=None, fail=None, fail_once=None, script=None, tag=None, newer=None, body=None):
     Stub.script, Stub.polls, Stub.app, Stub.patches = dict(script or {}), 0, {}, []
     base = tempfile.mkdtemp()
     try:
@@ -143,7 +144,7 @@ def run(port, name, *, env=None, releases=None, fail=None, fail_once=None, scrip
             with open(os.path.join(bindir, n), "w") as f:
                 f.write(SHIM % real)
             os.chmod(os.path.join(bindir, n), 0o755)
-        repo, sha = git_repo(base, tag, newer)
+        repo, sha = git_repo(base, tag, newer, body)
         rt = os.path.join(base, "rt")
         os.makedirs(rt)
         out_file = os.path.join(base, "gh-output")
@@ -581,6 +582,16 @@ def rows(port):
     add("deploy-message: a successful Deploy prints the message and nothing else from the body",
         r["rc"] == 0 and "queued-msg" in r["out"] and planted not in r["out"]
         and "deployment_uuid=dep-1" in r["output"], r["out"])
+
+    # A body this long overflows the pipe, so a piped grep -q that exits at its first match kills the writer
+    # and pipefail reads the match as a miss: a breaking change would ship as a minor bump.
+    D, filler = "Derive version from the squash commit title", "\n".join(["x" * 60] * 1600)
+    r = run(port, D, body="BREAKING CHANGE: the first line\n" + filler)
+    add("version: BREAKING CHANGE at the top of a ~100 KB commit body is a major bump",
+        r["rc"] == 0 and "version=v1.0.0" in r["output"], r["out"][-300:] + r["output"])
+    r = run(port, D, body=filler)
+    add("version: the same long body without BREAKING CHANGE stays a minor bump",
+        r["rc"] == 0 and "version=v0.1.0" in r["output"], r["out"][-300:] + r["output"])
 
     return checks
 
