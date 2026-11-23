@@ -167,8 +167,9 @@ only `custom`. Fixtures: `fixtures/custom-node` (a wrapper ENTRYPOINT, `smoke-ar
 
 `skip-image-checks: true` (custom only) is for an image that cannot boot in CI and is not deployed by Coolify. The image
 is still built and published as `:sha-<head>`. The non-root and port 80 check, the boot, the `/healthz` probes and the
-HEALTHCHECK gate do not run, so a green `ci / image` proves only that the image builds. It is refused with `coolify-app`
-and with any smoke key. Fixture: `fixtures/custom-no-boot` (runs as root, exposes 8090, exits at start).
+HEALTHCHECK gate do not run, so a green `ci / image` proves only that the image builds, and a root image passes. It is
+refused with `coolify-app` and with any smoke key. `release.yml`'s legacy `coolify-app-uuid` input is not checked, so never
+combine it with this key. Fixture: `fixtures/custom-no-boot` (runs as root, exposes 8090, exits at start).
 
 ## Not supported yet (step 3 extends the files if a pilot needs it)
 

@@ -391,7 +391,9 @@ wrapper-ENTRYPOINT recipe: [`dockerfiles/README.md`](dockerfiles/README.md#custo
 
 `skip-image-checks: true` is for a `custom` image that cannot boot in CI and is not deployed by Coolify (ci-launcher,
 game-panel). The `image` job still builds it and publishes `:sha-<head>`, but skips the user and port check, the boot
-and the health checks. It is refused together with `coolify-app` or any smoke key.
+and the health checks, so a root image passes. It is refused together with `coolify-app` or any smoke key. That refusal
+covers `build.yml` only: a caller that passes `coolify-app-uuid` to `release.yml` in legacy mode is not checked, so never
+combine that input with this key.
 
 ### Building it locally
 
