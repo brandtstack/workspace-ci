@@ -22,6 +22,7 @@ import yaml
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "go-ci.yml")
 APP_WORKFLOW = os.path.join(HERE, "..", "..", ".github", "workflows", "app.yml")
+README = os.path.join(HERE, "..", "..", "README.md")
 
 
 def pin(path):
@@ -151,6 +152,10 @@ def rows():
         all("${{" not in x.get("run", "") for x in (skip, scan)))
     add("scanner version is exact-pinned", re.fullmatch(r"v\d+\.\d+\.\d+", scan["env"]["GOVULNCHECK_VERSION"]) is not None, scan["env"]["GOVULNCHECK_VERSION"])
     add("app.yml and go-ci.yml pin the same scanner version", pin(APP_WORKFLOW) == VERSION, pin(APP_WORKFLOW))
+    with open(README) as f:
+        readme_pin = re.search(r"`govulncheck` \(pinned `(v\d+\.\d+\.\d+)`\)", f.read())
+    add("README names the pinned scanner version in the form Renovate updates",
+        readme_pin is not None and readme_pin.group(1) == VERSION, readme_pin.group(1) if readme_pin else "no match")
 
     # ---- the govulncheck run: block ----
     with tempfile.TemporaryDirectory() as base:
