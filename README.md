@@ -391,10 +391,10 @@ wrapper-ENTRYPOINT recipe: [`dockerfiles/README.md`](dockerfiles/README.md#custo
 
 `skip-image-checks: true` is for a `custom` image that cannot boot in CI and is not deployed by Coolify (ci-launcher,
 game-panel). The `image` job still builds it, publishes `:sha-<head>` and fails a root image, but skips the port check,
-the boot and the health checks. It is refused together with `coolify-app` or any smoke key. That refusal covers
-`build.yml` only: a caller that passes `coolify-app-uuid` to `release.yml` in legacy mode is not checked, so never combine
-that input with this key. `allow-root-image: true` (requires `skip-image-checks`) lets an image that really runs as root
-pass, with a warning in the log. Set it only for such an image (game-panel, for its docker socket).
+the boot and the health checks. It is refused together with `coolify-app` or any smoke key, and `release.yml` refuses a
+`coolify-app-uuid` input from a repo that sets it. `allow-root-image: true` (requires `skip-image-checks`) lets an image
+that really runs as root pass, with a warning in the log. `app.yml` holds the allowlist for both keys: ci-launcher and
+game-panel for the first, game-panel only for the second (plus this repo's fixture). Any other repo fails `ci / image`.
 
 ### Building it locally
 

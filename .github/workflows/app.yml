@@ -508,6 +508,19 @@ jobs:
           ALLOW_ROOT_IMAGE: ${{ needs.verify.outputs.allow-root-image }}
         run: |
           set -euo pipefail
+          # The two opt-outs are per repo, decided here and not in the caller's build.yml. workspace-ci is its fixture.
+          if [ "$SKIP_IMAGE_CHECKS" = true ]; then
+            case "$GITHUB_REPOSITORY" in
+              brandtstack/ci-launcher|brandtstack/game-panel|brandtstack/workspace-ci) ;;
+              *) echo "::error::skip-image-checks is not allowed for ${GITHUB_REPOSITORY}"; exit 1 ;;
+            esac
+          fi
+          if [ "$ALLOW_ROOT_IMAGE" = true ]; then
+            case "$GITHUB_REPOSITORY" in
+              brandtstack/game-panel|brandtstack/workspace-ci) ;;
+              *) echo "::error::allow-root-image is not allowed for ${GITHUB_REPOSITORY}"; exit 1 ;;
+            esac
+          fi
           user="$(docker image inspect --format '{{.Config.User}}' ci-image:local)"
           ports="$(docker image inspect --format '{{json .Config.ExposedPorts}}' ci-image:local)"
           echo "Config.User=${user} Config.ExposedPorts=${ports}"

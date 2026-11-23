@@ -344,7 +344,8 @@ def rows(port):
         all(x in sy for x in ("inputs.contract", "steps.guard.outputs.skip == 'false'", "inputs.publish-image",
                               "steps.target.outputs.uuid != ''")), sy)
     for n in ("Require the workflow's own ref", "Check out workspace-ci at its own ref", "Move workspace-ci out of the workspace", "Read the build contract"):
-        add("contract-only step: %s" % n, steps[n].get("if") == "inputs.contract", str(steps[n].get("if")))
+        add("contract step runs in contract mode or when a build.yml exists: %s" % n,
+            steps[n].get("if") == "inputs.contract || hashFiles('.github/build.yml') != ''", str(steps[n].get("if")))
     add("target step always runs (legacy callers read it too)", "if" not in steps["Resolve the Coolify target"], "")
     raw = open(WORKFLOW).read().split("jobs:", 1)[1]
     add("no Coolify step reads the coolify-app-uuid input directly (only the target step does)",
@@ -374,6 +375,12 @@ def rows(port):
     r = run(port, T, env={"CONTRACT": "true", "INPUT_UUID": "", "APPS": "winnfosay9q4zcm1iisu2rgm", "FAMILY": "spa", "NODE": "24", "GO": ""})
     add("target contract: build.yml's app and family", r["rc"] == 0 and "uuid=winnfosay9q4zcm1iisu2rgm" in r["output"] and "family=spa" in r["output"], r["out"] + r["output"])
     add("target legacy writes no toolchain", "toolchain" not in run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "x", "APPS": "", "FAMILY": ""})["output"], "")
+    r = run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "legacy-1", "APPS": "", "FAMILY": "custom", "SKIP_IMAGE_CHECKS": "true"})
+    add("target legacy refuses a Coolify uuid with skip-image-checks", r["rc"] != 0 and "uuid=" not in r["output"] and "skip-image-checks" in r["out"], r["out"] + r["output"])
+    r = run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "", "APPS": "", "FAMILY": "custom", "SKIP_IMAGE_CHECKS": "true"})
+    add("target legacy without uuid: skip-image-checks is fine (tag-only caller)", r["rc"] == 0 and "uuid=\n" in r["output"], r["out"] + r["output"])
+    r = run(port, T, env={"CONTRACT": "false", "INPUT_UUID": "legacy-1", "APPS": "", "FAMILY": "custom", "SKIP_IMAGE_CHECKS": "false"})
+    add("target legacy with a build.yml that does not skip: the input, unchanged", r["rc"] == 0 and "uuid=legacy-1" in r["output"], r["out"] + r["output"])
     # family table: (family, contract node, contract go) -> toolchain. next/spa carry node, go carries go,
     # custom takes whichever of the two the contract names (validate.jq allows exactly one).
     for fam, node, go, want in (("next", "24", "", "node"), ("spa", "24", "", "node"), ("go", "", "1.27", "go"),

@@ -131,9 +131,27 @@ class ImageContract(unittest.TestCase):
     PORT_80 = '{"80/tcp":{}}\n'
     PORT_8090 = '{"8090/tcp":{}}\n'
 
-    def check(self, user, ports, skip="false", allow="false"):
-        return run_step(self.N, {"SKIP_IMAGE_CHECKS": skip, "ALLOW_ROOT_IMAGE": allow},
+    def check(self, user, ports, skip="false", allow="false", repo="brandtstack/game-panel"):
+        return run_step(self.N, {"SKIP_IMAGE_CHECKS": skip, "ALLOW_ROOT_IMAGE": allow, "GITHUB_REPOSITORY": repo},
                         fake={"user": user, "ports": ports})[0]
+
+    def test_skip_image_checks_is_refused_for_any_other_repo(self):
+        p = self.check("node\n", self.PORT_8090, skip="true", repo="brandtstack/tilde")
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("skip-image-checks is not allowed for brandtstack/tilde", p.stdout)
+
+    def test_skip_image_checks_is_allowed_for_ci_launcher(self):
+        p = self.check("65532\n", self.PORT_8090, skip="true", repo="brandtstack/ci-launcher")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_allow_root_image_is_refused_for_ci_launcher(self):
+        p = self.check("root\n", self.PORT_8090, skip="true", allow="true", repo="brandtstack/ci-launcher")
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("allow-root-image is not allowed for brandtstack/ci-launcher", p.stdout)
+
+    def test_an_opt_out_cannot_be_matched_by_a_longer_repo_name(self):
+        p = self.check("node\n", self.PORT_8090, skip="true", repo="brandtstack/game-panel-fork")
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
 
     def test_a_normal_image_passes(self):
         p = self.check("node\n", self.PORT_80)

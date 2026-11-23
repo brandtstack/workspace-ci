@@ -67,8 +67,9 @@ jobs:
       # Same mechanism as app.yml (see its header): workspace-ci at job.workflow_sha, never main.
       # Runs before anything is minted, so a bad contract fails with no tag and no image promoted
       # (the Coolify sync, further down, also runs before the promote and the tag).
+      # A legacy caller with a build.yml reads it too, so the target step can refuse a skip-image-checks deploy.
       - name: Require the workflow's own ref
-        if: inputs.contract
+        if: inputs.contract || hashFiles('.github/build.yml') != ''
         env:
           WF_REPO: ${{ job.workflow_repository }}
           WF_SHA: ${{ job.workflow_sha }}
@@ -79,7 +80,7 @@ jobs:
           fi
 
       - name: Check out workspace-ci at its own ref
-        if: inputs.contract
+        if: inputs.contract || hashFiles('.github/build.yml') != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
@@ -88,7 +89,7 @@ jobs:
           persist-credentials: false
 
       - name: Move workspace-ci out of the workspace
-        if: inputs.contract
+        if: inputs.contract || hashFiles('.github/build.yml') != ''
         run: |
           set -euo pipefail
           if [ -e "$RUNNER_TEMP/ws-ci" ]; then
@@ -100,7 +101,7 @@ jobs:
 
       - name: Read the build contract
         id: contract
-        if: inputs.contract
+        if: inputs.contract || hashFiles('.github/build.yml') != ''
         run: bash "$RUNNER_TEMP/ws-ci/contract/read.sh" .github/build.yml
 
       # The one place the Coolify target is decided; every Coolify step below reads steps.target.outputs.uuid.
@@ -114,9 +115,15 @@ jobs:
           FAMILY: ${{ steps.contract.outputs.family }}
           NODE: ${{ steps.contract.outputs.node }}
           GO: ${{ steps.contract.outputs.go }}
+          SKIP_IMAGE_CHECKS: ${{ steps.contract.outputs.skip-image-checks }}
         run: |
           set -euo pipefail
           if [ "$CONTRACT" != "true" ]; then
+            # An image that was never booted must not reach Coolify, whichever way the target was named.
+            if [ -n "$INPUT_UUID" ] && [ "${SKIP_IMAGE_CHECKS:-}" = true ]; then
+              echo "::error::build.yml sets skip-image-checks, so this image cannot be deployed to Coolify; drop the coolify-app-uuid input"
+              exit 1
+            fi
             echo "uuid=${INPUT_UUID}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
