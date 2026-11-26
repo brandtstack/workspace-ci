@@ -273,7 +273,7 @@ def rows(port, dead_port, tmp):
         re.search(r"--package renovate@\d+\.\d+\.\d+ -- renovate-config-validator --strict default\.json renovate\.json",
                   tests_run), tests_run)
     add("static: tests job sets up Node 24 for Renovate",
-        any(s.get("uses", "").startswith("actions/setup-node@") and str(s.get("with", {}).get("node-version")) == "24"
+        any(s.get("uses", "").startswith("actions/setup-node@") and str(s.get("with", {}).get("node-version")).split(".")[0] == "24"
             for j in jobs for s in j["steps"]))
 
     # Happy path: first review posts one comment.
