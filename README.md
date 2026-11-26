@@ -251,7 +251,7 @@ on every PR, on GitHub-hosted runners only.
 ### Running on the self-hosted runner (private repos only)
 
 All four workflows take a **`runner:`** input — JSON for `runs-on`, default `'"ubuntu-latest"'`
-(GitHub-hosted). Private brandtstack repos opt in to the one-job, Sysbox-isolated runners on the Acer
+(GitHub-hosted). Private brandtstack repos opt in to the one-job, Sysbox-isolated self-hosted runners
 by passing it to **every** job, `release` included:
 
 ```yaml
@@ -261,7 +261,7 @@ by passing it to **every** job, `release` included:
 
 ⚠️ **Never set it from a public repo** — a public repo's PRs would run untrusted code on home
 hardware. This repo is public and never sets it; the launcher also refuses any job from a public repo.
-Fallback if the Acer is down: set it back to `'"ubuntu-latest"'` (spends Actions minutes).
+Fallback if the runner host is down: set it back to `'"ubuntu-latest"'` (spends Actions minutes).
 Operations are in the private runner docs.
 
 ⚠️ **`release` promotes the `:sha-<head>` image that `ci / image` published.** `app.yml` always publishes it, so a
@@ -451,7 +451,7 @@ So the repo page's **Latest** badge is the version Coolify confirmed. A tag-only
 - A `⏸ superseded` mark also covers an older deploy that Coolify cancelled or failed after a newer
   merge had already pointed the app elsewhere.
 - Waiting holds the runner for the deploy's length (~70 s for a Next.js app, at most 10 min). The
-  Acer runs 2 jobs at once, so each release holds one of the two slots while it waits.
+  runner host has a fixed number of job slots, so each release holds one while it waits.
 - ⚠️ `finished` is Coolify's word. Whether it implies the container's healthcheck passed is **not
   verified yet**.
 - **Rollback (tag swap)** bypasses this workflow, so move the badge by hand:
