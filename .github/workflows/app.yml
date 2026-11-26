@@ -126,7 +126,7 @@ jobs:
         run: bash "$RUNNER_TEMP/ws-ci/contract/read.sh" "${APP_PATH}/.github/build.yml"
 
       # --- node toolchain: next, spa, custom with `node` ---
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.contract.outputs.node != ''
         with:
           node-version: ${{ steps.contract.outputs.node }}
@@ -147,17 +147,17 @@ jobs:
         run: npm run verify
 
       # --- go toolchain: go, custom with `go` ---
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         if: steps.contract.outputs.go != ''
         with:
           go-version: ${{ steps.contract.outputs.go }}
           # The Acer's toolcache holds an older patch than the golang:<go-version>-alpine images
           # build with (go1.27.1 vs 1.27.3, 2026-11-09); test on the patch that ships.
           check-latest: true
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.contract.outputs.go != ''
         with:
-          node-version: '24'
+          node-version: '24.22.3'
       - name: make verify
         if: steps.contract.outputs.go != ''
         run: make verify
@@ -176,7 +176,7 @@ jobs:
         id: vulngo
         if: steps.contract.outputs.go != ''
         continue-on-error: ${{ github.event_name == 'push' }}
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: ${{ steps.contract.outputs.go }}
           check-latest: true
@@ -270,7 +270,7 @@ jobs:
         working-directory: ${{ inputs.path }}
     services:
       postgres:
-        image: postgres:16.15-alpine
+        image: postgres:16.16-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -287,7 +287,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: needs.verify.outputs.node != ''
         with:
           node-version: ${{ needs.verify.outputs.node }}
@@ -305,17 +305,17 @@ jobs:
         if: needs.verify.outputs.node != ''
         run: npm run verify:integration
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         if: needs.verify.outputs.go != ''
         with:
           go-version: ${{ needs.verify.outputs.go }}
           # The Acer's toolcache holds an older patch than the golang:<go-version>-alpine images
           # build with (go1.27.1 vs 1.27.3, 2026-11-09); test on the patch that ships.
           check-latest: true
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: needs.verify.outputs.go != ''
         with:
-          node-version: '24'
+          node-version: '24.22.3'
       - name: make verify-integration
         if: needs.verify.outputs.go != ''
         run: make verify-integration
@@ -346,7 +346,7 @@ jobs:
         with:
           persist-credentials: false
       # No npm cache: --package-lock-only installs nothing.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ needs.verify.outputs.node }}
       - name: npm audit (warn only)
@@ -448,12 +448,12 @@ jobs:
       # export (none used). Isolation: the build cache and image store are the job's own dockerd, which the Acer's
       # per-job Sysbox runner (AutoRemove, only the toolcache volume) discards with the job; a runner whose daemon
       # outlives a job would let one build's local tags and cache reach the next.
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           driver: docker
 
       - name: Build production image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           NPM_TOKEN: ${{ needs.verify.outputs.private-registry == 'true' && secrets.GITHUB_TOKEN || '' }}
           # A FIXED epoch, not the commit time: with the commit time every PR moves the clamp and every layer the
@@ -729,7 +729,7 @@ jobs:
 
       # Push happens last, so a smoke failure means nothing reaches the registry. Both steps are off in
       # workspace-ci itself (the fixture matrix builds and smokes but must publish nothing).
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         if: github.repository != 'brandtstack/workspace-ci'
         with:
           registry: ghcr.io
