@@ -70,13 +70,14 @@ credentials: `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`,
 `ANTHROPIC_SERVICE_ACCOUNT_ID`, and `ANTHROPIC_WORKSPACE_ID` (sent only when set). See
 *Automatic PR review*.
 
-### `release.yml` (3 inputs, 3 secrets)
+### `release.yml` (4 inputs, 3 secrets)
 
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
 | `publish-image` | boolean | `true` | `false` mints the git tag only, with no registry work. `app.yml` always publishes `:sha-<head>`, so its callers leave this on |
 | `coolify-app-uuid` | string | `''` | Coolify application uuid. Empty means no deploy is attempted (see *Deploying to Coolify*). Only acts when `publish-image` is also `true` |
 | `runner` | string | `'"ubuntu-latest"'` | JSON for `runs-on` |
+| `contract` | boolean | `false` | Contract mode (callers of `app.yml`): the Coolify app comes from the caller's `.github/build.yml` (`coolify-app`), and before deploying the release writes the app's port and health check from the contract's family. `coolify-app-uuid` must then be empty |
 
 Secrets (all optional, but needed **together** to deploy): `COOLIFY_TOKEN`, `CF_ACCESS_CLIENT_ID`,
 `CF_ACCESS_CLIENT_SECRET`.
@@ -483,13 +484,10 @@ Each repo defines what it can run, so the workflow and Dockerfile stay identical
 - `verify` — everything runnable with no external services (lint / typecheck / test, whichever exist)
 - `verify:integration` — optional; only where tests need a real service
 
-The Dockerfile builder stage runs `npm run verify` before `npm run build`. That
-`RUN` was the deploy gate while Coolify built from source; since it stopped
-(below) the same `RUN` fires in the `ci / image` job instead, so a failed
-`verify` fails the PR and no image is ever published. **The box has no
-independent gate left** — which is why `ci / verify` and `ci / image` are
-required checks, and why the `RUN` stays in the Dockerfile rather than being
-trusted to CI alone.
+The shared Dockerfiles do not run `npm run verify` (see
+[`dockerfiles/README.md`](dockerfiles/README.md)). `ci / verify` runs it and gates the commit;
+`ci / image` and `release` need it, so a failed `verify` fails the PR and no image is ever
+published. Make `ci / verify` and `ci / image` required checks: nothing else gates the image.
 
 ## Coolify builds nothing (since 2026-09-01)
 
