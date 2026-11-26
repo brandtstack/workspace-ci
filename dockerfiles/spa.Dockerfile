@@ -28,7 +28,7 @@ RUN set -e; \
     mkdir -p nginx/entrypoint.d nginx/runtime; \
     npm run build
 
-FROM nginx:1.31.8-alpine
+FROM nginx:1.31.10-alpine
 # Non-root: the main-context nginx.conf has no `user` directive and keeps pid and temp paths in /tmp.
 COPY --from=ws nginx/nginx.conf /etc/nginx/nginx.conf
 COPY --from=build /app/nginx.conf /etc/nginx/conf.d/default.conf
